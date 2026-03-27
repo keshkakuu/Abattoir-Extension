@@ -1,11 +1,6 @@
+// Only one static import — the most universally stable ST export.
+// Everything else is resolved at runtime to avoid [object Event] on older builds.
 import { extension_settings } from '../../../extensions.js';
-import {
-    saveSettingsDebounced,
-    setExtensionPrompt,
-    extension_prompt_types,
-    eventSource,
-    event_types,
-} from '../../../script.js';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -58,13 +53,51 @@ const DEFAULTS = {
     },
 };
 
+// ── Runtime ST function handles ───────────────────────────────────────────────
+// Populated during init() so a missing export never crashes the module load.
+
+let saveSettingsDebounced = () => {};
+let setExtensionPrompt    = null;
+let extension_prompt_types = null;
+let eventSource           = null;
+let event_types           = null;
+
+async function resolveSTAPIs() {
+    // Primary: dynamic import of script.js
+    try {
+        const mod = await import('../../../script.js');
+        saveSettingsDebounced  = mod.saveSettingsDebounced  ?? saveSettingsDebounced;
+        setExtensionPrompt     = mod.setExtensionPrompt     ?? null;
+        extension_prompt_types = mod.extension_prompt_types ?? null;
+        eventSource            = mod.eventSource            ?? null;
+        event_types            = mod.event_types            ?? null;
+    } catch (err) {
+        console.warn('[Abattoir] Dynamic import of script.js failed:', err);
+    }
+
+    // Fallback: SillyTavern.getContext() (available in newer builds)
+    try {
+        const ctx = window.SillyTavern?.getContext?.() ?? {};
+        saveSettingsDebounced  = saveSettingsDebounced  || ctx.saveSettingsDebounced  || saveSettingsDebounced;
+        setExtensionPrompt     = setExtensionPrompt     || ctx.setExtensionPrompt     || null;
+        extension_prompt_types = extension_prompt_types || ctx.extension_prompt_types || null;
+        eventSource            = eventSource            || ctx.eventSource            || null;
+        event_types            = event_types            || ctx.event_types            || null;
+    } catch (err) {
+        console.warn('[Abattoir] getContext() fallback failed:', err);
+    }
+
+    console.log('[Abattoir] API resolution —',
+        'setExtensionPrompt:', !!setExtensionPrompt,
+        'eventSource:', !!eventSource);
+}
+
 // ── Settings helpers ──────────────────────────────────────────────────────────
 
 function getSettings() {
     if (!extension_settings[EXT_NAME]) {
         extension_settings[EXT_NAME] = JSON.parse(JSON.stringify(DEFAULTS));
     }
-    // Fill any missing keys (after updates)
     for (const [k, v] of Object.entries(DEFAULTS)) {
         if (extension_settings[EXT_NAME][k] === undefined) {
             extension_settings[EXT_NAME][k] = JSON.parse(JSON.stringify(v));
@@ -108,6 +141,8 @@ const VIOLENCE_LABELS = { mild: 'Mild', moderate: 'Moderate', graphic: 'Graphic'
 // ── Prompt builder ────────────────────────────────────────────────────────────
 
 function buildAndInject() {
+    if (!setExtensionPrompt || !extension_prompt_types) return; // graceful no-op
+
     const s = getSettings();
 
     if (!s.enabled) {
@@ -160,11 +195,11 @@ function buildAndInject() {
 
 // ── Inline HTML template ──────────────────────────────────────────────────────
 
-const SETTINGS_HTML = /* html */`
+const SETTINGS_HTML = `
 <div id="abattoir-extension" class="abattoir-panel">
 
   <div class="abattoir-header">
-    <span class="abattoir-title">🔪 Abattoir</span>
+    <span class="abattoir-title">&#x1F52A; Abattoir</span>
     <label class="abattoir-master-toggle" title="Enable / disable the extension">
       <input type="checkbox" id="abattoir-enabled">
       <span class="abattoir-slider"></span>
@@ -173,7 +208,6 @@ const SETTINGS_HTML = /* html */`
 
   <div id="abattoir-body">
 
-    <!-- Random Events -->
     <details class="abattoir-section" open>
       <summary class="abattoir-section-title">
         Random Bad Events
@@ -186,12 +220,12 @@ const SETTINGS_HTML = /* html */`
         <div class="abattoir-row">
           <label class="abattoir-label" for="abattoir-events-frequency">Frequency</label>
           <select id="abattoir-events-frequency" class="abattoir-select">
-            <option value="rare">Rare — once in a while</option>
-            <option value="occasional">Occasional — now and then</option>
-            <option value="frequent">Frequent — bad day every day</option>
+            <option value="rare">Rare</option>
+            <option value="occasional">Occasional</option>
+            <option value="frequent">Frequent</option>
           </select>
         </div>
-        <div class="abattoir-label abattoir-sub-label">Event Types</div>
+        <div class="abattoir-sub-label">Event Types</div>
         <div class="abattoir-checkbox-grid">
           <label class="abattoir-check-label"><input type="checkbox" id="abattoir-event-physicalHarm"><span>Physical Harm</span></label>
           <label class="abattoir-check-label"><input type="checkbox" id="abattoir-event-death"><span>Death</span></label>
@@ -205,7 +239,6 @@ const SETTINGS_HTML = /* html */`
       </div>
     </details>
 
-    <!-- Infoblocks -->
     <details class="abattoir-section">
       <summary class="abattoir-section-title">Infoblock Style</summary>
       <div class="abattoir-section-body">
@@ -221,7 +254,7 @@ const SETTINGS_HTML = /* html */`
           </select>
         </div>
         <div id="abattoir-infoblock-fields">
-          <div class="abattoir-label abattoir-sub-label">Include in Infoblocks</div>
+          <div class="abattoir-sub-label">Include in Infoblocks</div>
           <div class="abattoir-checkbox-grid">
             <label class="abattoir-check-label"><input type="checkbox" id="abattoir-infoblock-show-status"><span>Status Effects</span></label>
             <label class="abattoir-check-label"><input type="checkbox" id="abattoir-infoblock-show-injuries"><span>Injuries</span></label>
@@ -233,7 +266,6 @@ const SETTINGS_HTML = /* html */`
       </div>
     </details>
 
-    <!-- Content Preferences -->
     <details class="abattoir-section">
       <summary class="abattoir-section-title">Content Preferences</summary>
       <div class="abattoir-section-body">
@@ -246,24 +278,24 @@ const SETTINGS_HTML = /* html */`
             <option value="extreme">Extreme</option>
           </select>
         </div>
-        <div class="abattoir-label abattoir-sub-label">Dark Themes</div>
+        <div class="abattoir-sub-label">Dark Themes</div>
         <div class="abattoir-checkbox-grid">
           <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-psychologicalHorror"><span>Psych. Horror</span></label>
           <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-torture"><span>Torture</span></label>
           <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-suffering"><span>Suffering</span></label>
         </div>
-        <div class="abattoir-label abattoir-sub-label">Power Dynamics</div>
+        <div class="abattoir-sub-label">Power Dynamics</div>
         <div class="abattoir-checkbox-grid">
           <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-dominanceSubmission"><span>Dom / Sub</span></label>
           <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-captivity"><span>Captivity</span></label>
           <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-controlManipulation"><span>Control &amp; Manipulation</span></label>
         </div>
-        <div class="abattoir-label abattoir-sub-label">Intimacy</div>
+        <div class="abattoir-sub-label">Intimacy</div>
         <div class="abattoir-checkbox-grid">
           <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-romance"><span>Romance</span></label>
           <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-explicitSexual"><span>Explicit Sexual</span></label>
         </div>
-        <div class="abattoir-label abattoir-sub-label">Creature &amp; Monster</div>
+        <div class="abattoir-sub-label">Creature &amp; Monster</div>
         <div class="abattoir-checkbox-grid">
           <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-monsterRomance"><span>Monster Romance</span></label>
           <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-nonhumanEntities"><span>Non-human Entities</span></label>
@@ -271,8 +303,8 @@ const SETTINGS_HTML = /* html */`
       </div>
     </details>
 
-  </div><!-- /#abattoir-body -->
-</div><!-- /#abattoir-extension -->
+  </div>
+</div>
 `;
 
 // ── UI wiring ─────────────────────────────────────────────────────────────────
@@ -280,7 +312,6 @@ const SETTINGS_HTML = /* html */`
 function wireUI() {
     const s = getSettings();
 
-    // Master toggle
     $('#abattoir-enabled')
         .prop('checked', s.enabled)
         .on('change', function () {
@@ -290,7 +321,6 @@ function wireUI() {
         });
     $('#abattoir-body').toggleClass('abattoir-disabled', !s.enabled);
 
-    // Events toggle
     $('#abattoir-events-enabled')
         .prop('checked', s.events.enabled)
         .on('change', function () {
@@ -300,19 +330,16 @@ function wireUI() {
         });
     $('#abattoir-events-options').toggleClass('abattoir-hidden', !s.events.enabled);
 
-    // Events frequency
     $('#abattoir-events-frequency')
         .val(s.events.frequency)
         .on('change', function () { s.events.frequency = this.value; save(); });
 
-    // Event type checkboxes
     for (const key of Object.keys(s.events.types)) {
         $(`#abattoir-event-${key}`)
             .prop('checked', s.events.types[key])
             .on('change', function () { s.events.types[key] = this.checked; save(); });
     }
 
-    // Infoblock style
     $('#abattoir-infoblock-style')
         .val(s.infoblocks.style)
         .on('change', function () {
@@ -322,19 +349,16 @@ function wireUI() {
         });
     $('#abattoir-infoblock-fields').toggleClass('abattoir-hidden', s.infoblocks.style === 'none');
 
-    // Infoblock field checkboxes
     for (const key of Object.keys(s.infoblocks.show)) {
         $(`#abattoir-infoblock-show-${key}`)
             .prop('checked', s.infoblocks.show[key])
             .on('change', function () { s.infoblocks.show[key] = this.checked; save(); });
     }
 
-    // Violence level
     $('#abattoir-violence-level')
         .val(s.content.violenceLevel)
         .on('change', function () { s.content.violenceLevel = this.value; save(); });
 
-    // Content preference checkboxes
     const contentKeys = [
         'psychologicalHorror', 'torture', 'suffering',
         'dominanceSubmission', 'captivity', 'controlManipulation',
@@ -350,22 +374,25 @@ function wireUI() {
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 jQuery(async () => {
-    // Ensure settings object exists
+    // Resolve ST APIs dynamically so import failures don't crash the module
+    await resolveSTAPIs();
+
     getSettings();
 
-    // Inject UI into the Extensions settings drawer
     $('#extensions_settings').append(SETTINGS_HTML);
 
     wireUI();
 
-    // Re-inject before every generation
-    eventSource.on(event_types.CHAT_COMPLETION_SETTINGS_READY, buildAndInject);
+    if (eventSource && event_types) {
+        if (event_types.CHAT_COMPLETION_SETTINGS_READY) {
+            eventSource.on(event_types.CHAT_COMPLETION_SETTINGS_READY, buildAndInject);
+        }
+        if (event_types.MESSAGE_SENT) {
+            eventSource.on(event_types.MESSAGE_SENT, buildAndInject);
+        }
+    }
 
-    // Also hook MESSAGE_SENT as a fallback for text-completion backends
-    eventSource.on(event_types.MESSAGE_SENT, buildAndInject);
-
-    // Inject immediately on load
     buildAndInject();
 
-    console.log('[Abattoir] Extension loaded successfully.');
+    console.log('[Abattoir] Extension loaded.');
 });
