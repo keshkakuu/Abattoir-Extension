@@ -1,3 +1,4 @@
+import { extension_settings } from '../../../extensions.js';
 import {
     saveSettingsDebounced,
     setExtensionPrompt,
@@ -5,63 +6,53 @@ import {
     eventSource,
     event_types,
 } from '../../../script.js';
-import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
 
-// ── Constants ───────────────────────────────────────────────────────────────
+// ── Constants ────────────────────────────────────────────────────────────────
 
-const EXT_NAME = 'abattoir';
+const EXT_NAME   = 'abattoir';
 const PROMPT_KEY = 'abattoir_prefs';
-const PROMPT_POSITION = extension_prompt_types.AFTER_PROMPT;
-const PROMPT_DEPTH = 4; // inject 4 messages from the end when using IN_CHAT
 
-// ── Default settings ─────────────────────────────────────────────────────────
+// ── Default settings ──────────────────────────────────────────────────────────
 
 const DEFAULTS = {
     enabled: true,
 
-    // ── Random Events ──────────────────────────────────────────────────────
     events: {
-        enabled: false,
-        frequency: 'occasional',   // 'rare' | 'occasional' | 'frequent'
+        enabled:   false,
+        frequency: 'occasional',
         types: {
-            physicalHarm:     true,
-            death:            false,
-            bodyHorror:       false,
-            environmental:    true,
-            social:           true,
-            disease:          false,
-            propertyDamage:   false,
-            betrayal:         true,
+            physicalHarm:   true,
+            death:          false,
+            bodyHorror:     false,
+            environmental:  true,
+            social:         true,
+            disease:        false,
+            propertyDamage: false,
+            betrayal:       true,
         },
     },
 
-    // ── Infoblocks ─────────────────────────────────────────────────────────
     infoblocks: {
-        style: 'standard',   // 'none' | 'minimal' | 'standard' | 'detailed' | 'fancy' | 'clinical'
+        style: 'standard',
         show: {
-            status:    true,
-            injuries:  true,
+            status:     true,
+            injuries:   true,
             conditions: true,
-            stats:     false,
-            inventory: false,
+            stats:      false,
+            inventory:  false,
         },
     },
 
-    // ── Content Preferences ────────────────────────────────────────────────
     content: {
-        violenceLevel: 'moderate',   // 'mild' | 'moderate' | 'graphic' | 'extreme'
-        // Dark Themes
+        violenceLevel:       'moderate',
         psychologicalHorror: true,
         torture:             false,
         suffering:           true,
-        // Power Dynamics
         dominanceSubmission: false,
         captivity:           false,
         controlManipulation: false,
-        // Intimacy
         romance:             true,
         explicitSexual:      false,
-        // Creature / Monster
         monsterRomance:      false,
         nonhumanEntities:    false,
     },
@@ -70,11 +61,13 @@ const DEFAULTS = {
 // ── Settings helpers ──────────────────────────────────────────────────────────
 
 function getSettings() {
-    extension_settings[EXT_NAME] ??= structuredClone(DEFAULTS);
-    // Migrate missing keys from future DEFAULTS updates
+    if (!extension_settings[EXT_NAME]) {
+        extension_settings[EXT_NAME] = JSON.parse(JSON.stringify(DEFAULTS));
+    }
+    // Fill any missing keys (after updates)
     for (const [k, v] of Object.entries(DEFAULTS)) {
         if (extension_settings[EXT_NAME][k] === undefined) {
-            extension_settings[EXT_NAME][k] = structuredClone(v);
+            extension_settings[EXT_NAME][k] = JSON.parse(JSON.stringify(v));
         }
     }
     return extension_settings[EXT_NAME];
@@ -85,75 +78,9 @@ function save() {
     buildAndInject();
 }
 
-// ── Prompt builder ────────────────────────────────────────────────────────────
-
-function buildPrompt(s) {
-    if (!s.enabled) {
-        setExtensionPrompt(PROMPT_KEY, '', PROMPT_POSITION, PROMPT_DEPTH);
-        return;
-    }
-
-    const lines = ['[Abattoir Preferences]'];
-
-    // Events block
-    if (s.events.enabled) {
-        const activeTypes = Object.entries(s.events.types)
-            .filter(([, on]) => on)
-            .map(([k]) => EVENT_TYPE_LABELS[k] ?? k);
-
-        lines.push(`Random Events: ENABLED (${FREQ_LABELS[s.events.frequency] ?? s.events.frequency})`);
-        if (activeTypes.length) lines.push(`  Active event types: ${activeTypes.join(', ')}`);
-    } else {
-        lines.push('Random Events: DISABLED');
-    }
-
-    // Infoblock block
-    if (s.infoblocks.style !== 'none') {
-        const shown = Object.entries(s.infoblocks.show)
-            .filter(([, on]) => on)
-            .map(([k]) => INFOBLOCK_SHOW_LABELS[k] ?? k);
-        lines.push(`Infoblock Style: ${INFOBLOCK_STYLE_LABELS[s.infoblocks.style] ?? s.infoblocks.style}`);
-        if (shown.length) lines.push(`  Infoblock fields: ${shown.join(', ')}`);
-    } else {
-        lines.push('Infoblocks: DISABLED');
-    }
-
-    // Content block
-    const activeContent = [];
-    activeContent.push(`Violence: ${VIOLENCE_LABELS[s.content.violenceLevel] ?? s.content.violenceLevel}`);
-    const contentFlags = [
-        ['psychologicalHorror', 'Psychological Horror'],
-        ['torture',             'Torture'],
-        ['suffering',           'Suffering / Despair'],
-        ['dominanceSubmission', 'Dominance & Submission'],
-        ['captivity',           'Captivity / Confinement'],
-        ['controlManipulation', 'Control & Manipulation'],
-        ['romance',             'Romance'],
-        ['explicitSexual',      'Explicit Sexual Content'],
-        ['monsterRomance',      'Monster Romance'],
-        ['nonhumanEntities',    'Non-human Entities'],
-    ];
-    const enabledContent = contentFlags.filter(([k]) => s.content[k]).map(([, label]) => label);
-    if (enabledContent.length) activeContent.push(`Enabled themes: ${enabledContent.join(', ')}`);
-    lines.push('Content Preferences:');
-    activeContent.forEach(l => lines.push(`  ${l}`));
-
-    lines.push('[/Abattoir Preferences]');
-
-    setExtensionPrompt(PROMPT_KEY, lines.join('\n'), PROMPT_POSITION, PROMPT_DEPTH);
-}
-
-function buildAndInject() {
-    buildPrompt(getSettings());
-}
-
 // ── Label maps ────────────────────────────────────────────────────────────────
 
-const FREQ_LABELS = {
-    rare:       'Rare',
-    occasional: 'Occasional',
-    frequent:   'Frequent',
-};
+const FREQ_LABELS = { rare: 'Rare', occasional: 'Occasional', frequent: 'Frequent' };
 
 const EVENT_TYPE_LABELS = {
     physicalHarm:   'Physical Harm',
@@ -167,28 +94,186 @@ const EVENT_TYPE_LABELS = {
 };
 
 const INFOBLOCK_STYLE_LABELS = {
-    none:     'None',
-    minimal:  'Minimal',
-    standard: 'Standard',
-    detailed: 'Detailed',
-    fancy:    'Fancy',
-    clinical: 'Clinical',
+    none: 'None', minimal: 'Minimal', standard: 'Standard',
+    detailed: 'Detailed', fancy: 'Fancy', clinical: 'Clinical',
 };
 
 const INFOBLOCK_SHOW_LABELS = {
-    status:     'Status Effects',
-    injuries:   'Injuries',
-    conditions: 'Conditions',
-    stats:      'Stats',
-    inventory:  'Inventory',
+    status: 'Status Effects', injuries: 'Injuries', conditions: 'Conditions',
+    stats: 'Stats', inventory: 'Inventory',
 };
 
-const VIOLENCE_LABELS = {
-    mild:     'Mild',
-    moderate: 'Moderate',
-    graphic:  'Graphic',
-    extreme:  'Extreme',
-};
+const VIOLENCE_LABELS = { mild: 'Mild', moderate: 'Moderate', graphic: 'Graphic', extreme: 'Extreme' };
+
+// ── Prompt builder ────────────────────────────────────────────────────────────
+
+function buildAndInject() {
+    const s = getSettings();
+
+    if (!s.enabled) {
+        setExtensionPrompt(PROMPT_KEY, '', extension_prompt_types.AFTER_PROMPT, 0);
+        return;
+    }
+
+    const lines = ['[Abattoir Preferences]'];
+
+    if (s.events.enabled) {
+        const active = Object.entries(s.events.types)
+            .filter(([, on]) => on)
+            .map(([k]) => EVENT_TYPE_LABELS[k] ?? k);
+        lines.push(`Random Events: ENABLED (${FREQ_LABELS[s.events.frequency] ?? s.events.frequency})`);
+        if (active.length) lines.push(`  Event types: ${active.join(', ')}`);
+    } else {
+        lines.push('Random Events: DISABLED');
+    }
+
+    if (s.infoblocks.style !== 'none') {
+        const shown = Object.entries(s.infoblocks.show)
+            .filter(([, on]) => on)
+            .map(([k]) => INFOBLOCK_SHOW_LABELS[k] ?? k);
+        lines.push(`Infoblock Style: ${INFOBLOCK_STYLE_LABELS[s.infoblocks.style] ?? s.infoblocks.style}`);
+        if (shown.length) lines.push(`  Fields: ${shown.join(', ')}`);
+    } else {
+        lines.push('Infoblocks: DISABLED');
+    }
+
+    const contentFlags = [
+        ['psychologicalHorror', 'Psychological Horror'],
+        ['torture',             'Torture'],
+        ['suffering',           'Suffering / Despair'],
+        ['dominanceSubmission', 'Dominance & Submission'],
+        ['captivity',           'Captivity / Confinement'],
+        ['controlManipulation', 'Control & Manipulation'],
+        ['romance',             'Romance'],
+        ['explicitSexual',      'Explicit Sexual Content'],
+        ['monsterRomance',      'Monster Romance'],
+        ['nonhumanEntities',    'Non-human Entities'],
+    ];
+    const enabledContent = contentFlags.filter(([k]) => s.content[k]).map(([, l]) => l);
+    lines.push(`Content — Violence: ${VIOLENCE_LABELS[s.content.violenceLevel] ?? s.content.violenceLevel}`);
+    if (enabledContent.length) lines.push(`  Themes: ${enabledContent.join(', ')}`);
+
+    lines.push('[/Abattoir Preferences]');
+
+    setExtensionPrompt(PROMPT_KEY, lines.join('\n'), extension_prompt_types.AFTER_PROMPT, 0);
+}
+
+// ── Inline HTML template ──────────────────────────────────────────────────────
+
+const SETTINGS_HTML = /* html */`
+<div id="abattoir-extension" class="abattoir-panel">
+
+  <div class="abattoir-header">
+    <span class="abattoir-title">🔪 Abattoir</span>
+    <label class="abattoir-master-toggle" title="Enable / disable the extension">
+      <input type="checkbox" id="abattoir-enabled">
+      <span class="abattoir-slider"></span>
+    </label>
+  </div>
+
+  <div id="abattoir-body">
+
+    <!-- Random Events -->
+    <details class="abattoir-section" open>
+      <summary class="abattoir-section-title">
+        Random Bad Events
+        <label class="abattoir-inline-toggle" title="Toggle random events">
+          <input type="checkbox" id="abattoir-events-enabled">
+          <span class="abattoir-slider abattoir-slider-sm"></span>
+        </label>
+      </summary>
+      <div id="abattoir-events-options" class="abattoir-section-body">
+        <div class="abattoir-row">
+          <label class="abattoir-label" for="abattoir-events-frequency">Frequency</label>
+          <select id="abattoir-events-frequency" class="abattoir-select">
+            <option value="rare">Rare — once in a while</option>
+            <option value="occasional">Occasional — now and then</option>
+            <option value="frequent">Frequent — bad day every day</option>
+          </select>
+        </div>
+        <div class="abattoir-label abattoir-sub-label">Event Types</div>
+        <div class="abattoir-checkbox-grid">
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-event-physicalHarm"><span>Physical Harm</span></label>
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-event-death"><span>Death</span></label>
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-event-bodyHorror"><span>Body Horror</span></label>
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-event-environmental"><span>Environmental</span></label>
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-event-social"><span>Social / Political</span></label>
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-event-disease"><span>Disease / Illness</span></label>
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-event-betrayal"><span>Betrayal</span></label>
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-event-propertyDamage"><span>Property Damage</span></label>
+        </div>
+      </div>
+    </details>
+
+    <!-- Infoblocks -->
+    <details class="abattoir-section">
+      <summary class="abattoir-section-title">Infoblock Style</summary>
+      <div class="abattoir-section-body">
+        <div class="abattoir-row">
+          <label class="abattoir-label" for="abattoir-infoblock-style">Style</label>
+          <select id="abattoir-infoblock-style" class="abattoir-select">
+            <option value="none">None</option>
+            <option value="minimal">Minimal</option>
+            <option value="standard">Standard</option>
+            <option value="detailed">Detailed</option>
+            <option value="fancy">Fancy</option>
+            <option value="clinical">Clinical</option>
+          </select>
+        </div>
+        <div id="abattoir-infoblock-fields">
+          <div class="abattoir-label abattoir-sub-label">Include in Infoblocks</div>
+          <div class="abattoir-checkbox-grid">
+            <label class="abattoir-check-label"><input type="checkbox" id="abattoir-infoblock-show-status"><span>Status Effects</span></label>
+            <label class="abattoir-check-label"><input type="checkbox" id="abattoir-infoblock-show-injuries"><span>Injuries</span></label>
+            <label class="abattoir-check-label"><input type="checkbox" id="abattoir-infoblock-show-conditions"><span>Conditions</span></label>
+            <label class="abattoir-check-label"><input type="checkbox" id="abattoir-infoblock-show-stats"><span>Stats</span></label>
+            <label class="abattoir-check-label"><input type="checkbox" id="abattoir-infoblock-show-inventory"><span>Inventory</span></label>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <!-- Content Preferences -->
+    <details class="abattoir-section">
+      <summary class="abattoir-section-title">Content Preferences</summary>
+      <div class="abattoir-section-body">
+        <div class="abattoir-row">
+          <label class="abattoir-label" for="abattoir-violence-level">Violence</label>
+          <select id="abattoir-violence-level" class="abattoir-select">
+            <option value="mild">Mild</option>
+            <option value="moderate">Moderate</option>
+            <option value="graphic">Graphic</option>
+            <option value="extreme">Extreme</option>
+          </select>
+        </div>
+        <div class="abattoir-label abattoir-sub-label">Dark Themes</div>
+        <div class="abattoir-checkbox-grid">
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-psychologicalHorror"><span>Psych. Horror</span></label>
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-torture"><span>Torture</span></label>
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-suffering"><span>Suffering</span></label>
+        </div>
+        <div class="abattoir-label abattoir-sub-label">Power Dynamics</div>
+        <div class="abattoir-checkbox-grid">
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-dominanceSubmission"><span>Dom / Sub</span></label>
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-captivity"><span>Captivity</span></label>
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-controlManipulation"><span>Control &amp; Manipulation</span></label>
+        </div>
+        <div class="abattoir-label abattoir-sub-label">Intimacy</div>
+        <div class="abattoir-checkbox-grid">
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-romance"><span>Romance</span></label>
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-explicitSexual"><span>Explicit Sexual</span></label>
+        </div>
+        <div class="abattoir-label abattoir-sub-label">Creature &amp; Monster</div>
+        <div class="abattoir-checkbox-grid">
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-monsterRomance"><span>Monster Romance</span></label>
+          <label class="abattoir-check-label"><input type="checkbox" id="abattoir-content-nonhumanEntities"><span>Non-human Entities</span></label>
+        </div>
+      </div>
+    </details>
+
+  </div><!-- /#abattoir-body -->
+</div><!-- /#abattoir-extension -->
+`;
 
 // ── UI wiring ─────────────────────────────────────────────────────────────────
 
@@ -196,118 +281,91 @@ function wireUI() {
     const s = getSettings();
 
     // Master toggle
-    const masterToggle = document.getElementById('abattoir-enabled');
-    if (masterToggle) {
-        masterToggle.checked = s.enabled;
-        masterToggle.addEventListener('change', () => {
-            s.enabled = masterToggle.checked;
-            document.getElementById('abattoir-body')?.classList.toggle('abattoir-disabled', !s.enabled);
+    $('#abattoir-enabled')
+        .prop('checked', s.enabled)
+        .on('change', function () {
+            s.enabled = this.checked;
+            $('#abattoir-body').toggleClass('abattoir-disabled', !s.enabled);
             save();
         });
-        document.getElementById('abattoir-body')?.classList.toggle('abattoir-disabled', !s.enabled);
-    }
+    $('#abattoir-body').toggleClass('abattoir-disabled', !s.enabled);
 
-    // ── Events ──────────────────────────────────────────────────────────────
-    const eventsToggle = document.getElementById('abattoir-events-enabled');
-    if (eventsToggle) {
-        eventsToggle.checked = s.events.enabled;
-        eventsToggle.addEventListener('change', () => {
-            s.events.enabled = eventsToggle.checked;
-            document.getElementById('abattoir-events-options')?.classList.toggle('abattoir-hidden', !s.events.enabled);
+    // Events toggle
+    $('#abattoir-events-enabled')
+        .prop('checked', s.events.enabled)
+        .on('change', function () {
+            s.events.enabled = this.checked;
+            $('#abattoir-events-options').toggleClass('abattoir-hidden', !s.events.enabled);
             save();
         });
-        document.getElementById('abattoir-events-options')?.classList.toggle('abattoir-hidden', !s.events.enabled);
-    }
+    $('#abattoir-events-options').toggleClass('abattoir-hidden', !s.events.enabled);
 
-    const freqSelect = document.getElementById('abattoir-events-frequency');
-    if (freqSelect) {
-        freqSelect.value = s.events.frequency;
-        freqSelect.addEventListener('change', () => {
-            s.events.frequency = freqSelect.value;
-            save();
-        });
-    }
+    // Events frequency
+    $('#abattoir-events-frequency')
+        .val(s.events.frequency)
+        .on('change', function () { s.events.frequency = this.value; save(); });
 
+    // Event type checkboxes
     for (const key of Object.keys(s.events.types)) {
-        const cb = document.getElementById(`abattoir-event-${key}`);
-        if (!cb) continue;
-        cb.checked = s.events.types[key];
-        cb.addEventListener('change', () => {
-            s.events.types[key] = cb.checked;
-            save();
-        });
+        $(`#abattoir-event-${key}`)
+            .prop('checked', s.events.types[key])
+            .on('change', function () { s.events.types[key] = this.checked; save(); });
     }
 
-    // ── Infoblocks ───────────────────────────────────────────────────────────
-    const styleSelect = document.getElementById('abattoir-infoblock-style');
-    if (styleSelect) {
-        styleSelect.value = s.infoblocks.style;
-        styleSelect.addEventListener('change', () => {
-            s.infoblocks.style = styleSelect.value;
-            document.getElementById('abattoir-infoblock-fields')?.classList.toggle('abattoir-hidden', s.infoblocks.style === 'none');
+    // Infoblock style
+    $('#abattoir-infoblock-style')
+        .val(s.infoblocks.style)
+        .on('change', function () {
+            s.infoblocks.style = this.value;
+            $('#abattoir-infoblock-fields').toggleClass('abattoir-hidden', this.value === 'none');
             save();
         });
-        document.getElementById('abattoir-infoblock-fields')?.classList.toggle('abattoir-hidden', s.infoblocks.style === 'none');
-    }
+    $('#abattoir-infoblock-fields').toggleClass('abattoir-hidden', s.infoblocks.style === 'none');
 
+    // Infoblock field checkboxes
     for (const key of Object.keys(s.infoblocks.show)) {
-        const cb = document.getElementById(`abattoir-infoblock-show-${key}`);
-        if (!cb) continue;
-        cb.checked = s.infoblocks.show[key];
-        cb.addEventListener('change', () => {
-            s.infoblocks.show[key] = cb.checked;
-            save();
-        });
+        $(`#abattoir-infoblock-show-${key}`)
+            .prop('checked', s.infoblocks.show[key])
+            .on('change', function () { s.infoblocks.show[key] = this.checked; save(); });
     }
 
-    // ── Content preferences ──────────────────────────────────────────────────
-    const violenceSelect = document.getElementById('abattoir-violence-level');
-    if (violenceSelect) {
-        violenceSelect.value = s.content.violenceLevel;
-        violenceSelect.addEventListener('change', () => {
-            s.content.violenceLevel = violenceSelect.value;
-            save();
-        });
-    }
+    // Violence level
+    $('#abattoir-violence-level')
+        .val(s.content.violenceLevel)
+        .on('change', function () { s.content.violenceLevel = this.value; save(); });
 
+    // Content preference checkboxes
     const contentKeys = [
         'psychologicalHorror', 'torture', 'suffering',
         'dominanceSubmission', 'captivity', 'controlManipulation',
-        'romance', 'explicitSexual',
-        'monsterRomance', 'nonhumanEntities',
+        'romance', 'explicitSexual', 'monsterRomance', 'nonhumanEntities',
     ];
     for (const key of contentKeys) {
-        const cb = document.getElementById(`abattoir-content-${key}`);
-        if (!cb) continue;
-        cb.checked = s.content[key];
-        cb.addEventListener('change', () => {
-            s.content[key] = cb.checked;
-            save();
-        });
+        $(`#abattoir-content-${key}`)
+            .prop('checked', s.content[key])
+            .on('change', function () { s.content[key] = this.checked; save(); });
     }
 }
 
-// ── Initialisation ────────────────────────────────────────────────────────────
+// ── Init ──────────────────────────────────────────────────────────────────────
 
-async function init() {
-    // Ensure settings exist
+jQuery(async () => {
+    // Ensure settings object exists
     getSettings();
 
-    // Load HTML template into the Extensions panel drawer
-    const html = await renderExtensionTemplateAsync(EXT_NAME, 'settings');
-    document.getElementById('extensions_settings').insertAdjacentHTML('beforeend', html);
+    // Inject UI into the Extensions settings drawer
+    $('#extensions_settings').append(SETTINGS_HTML);
 
     wireUI();
 
-    // Re-inject on every new generation so settings stay current
+    // Re-inject before every generation
     eventSource.on(event_types.CHAT_COMPLETION_SETTINGS_READY, buildAndInject);
 
-    // Initial inject (covers non-streaming / text completion backends)
+    // Also hook MESSAGE_SENT as a fallback for text-completion backends
+    eventSource.on(event_types.MESSAGE_SENT, buildAndInject);
+
+    // Inject immediately on load
     buildAndInject();
 
-    console.log('[Abattoir] Extension loaded.');
-}
-
-jQuery(async () => {
-    await init();
+    console.log('[Abattoir] Extension loaded successfully.');
 });
