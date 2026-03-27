@@ -1,6 +1,5 @@
-// Only one static import — the most universally stable ST export.
-// Everything else is resolved at runtime to avoid [object Event] on older builds.
 import { extension_settings } from '../../../extensions.js';
+import { promptManager } from '../../../scripts/openai.js';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -57,8 +56,6 @@ const DEFAULTS = {
 // Populated during init() so a missing export never crashes the module load.
 
 let saveSettingsDebounced = () => {};
-let setExtensionPrompt    = null;
-let extension_prompt_types = null;
 let eventSource           = null;
 let event_types           = null;
 
@@ -66,30 +63,24 @@ async function resolveSTAPIs() {
     // Primary: dynamic import of script.js
     try {
         const mod = await import('../../../script.js');
-        saveSettingsDebounced  = mod.saveSettingsDebounced  ?? saveSettingsDebounced;
-        setExtensionPrompt     = mod.setExtensionPrompt     ?? null;
-        extension_prompt_types = mod.extension_prompt_types ?? null;
-        eventSource            = mod.eventSource            ?? null;
-        event_types            = mod.event_types            ?? null;
+        saveSettingsDebounced = mod.saveSettingsDebounced ?? saveSettingsDebounced;
+        eventSource           = mod.eventSource           ?? null;
+        event_types           = mod.event_types           ?? null;
     } catch (err) {
         console.warn('[Abattoir] Dynamic import of script.js failed:', err);
     }
 
-    // Fallback: SillyTavern.getContext() (available in newer builds)
+    // Fallback: SillyTavern.getContext()
     try {
         const ctx = window.SillyTavern?.getContext?.() ?? {};
-        saveSettingsDebounced  = saveSettingsDebounced  || ctx.saveSettingsDebounced  || saveSettingsDebounced;
-        setExtensionPrompt     = setExtensionPrompt     || ctx.setExtensionPrompt     || null;
-        extension_prompt_types = extension_prompt_types || ctx.extension_prompt_types || null;
-        eventSource            = eventSource            || ctx.eventSource            || null;
-        event_types            = event_types            || ctx.event_types            || null;
+        saveSettingsDebounced = saveSettingsDebounced || ctx.saveSettingsDebounced || saveSettingsDebounced;
+        eventSource           = eventSource           || ctx.eventSource           || null;
+        event_types           = event_types           || ctx.event_types           || null;
     } catch (err) {
         console.warn('[Abattoir] getContext() fallback failed:', err);
     }
 
-    console.log('[Abattoir] API resolution —',
-        'setExtensionPrompt:', !!setExtensionPrompt,
-        'eventSource:', !!eventSource);
+    console.log('[Abattoir] API resolution — eventSource:', !!eventSource);
 }
 
 // ── Settings helpers ──────────────────────────────────────────────────────────
@@ -141,14 +132,19 @@ const VIOLENCE_LABELS = { mild: 'Mild', moderate: 'Moderate', graphic: 'Graphic'
 // ── Prompt builder ────────────────────────────────────────────────────────────
 
 function buildAndInject() {
-    if (!setExtensionPrompt || !extension_prompt_types) return; // graceful no-op
-
     const s = getSettings();
 
+    // Find the Abattoir prompt entry in the manager (matched by identifier or name)
+    const prompt = promptManager?.serviceSettings?.prompts?.find?.(
+        p => p.identifier === PROMPT_KEY || p.name === 'Abattoir Preferences',
+    );
+
     if (!s.enabled) {
-        setExtensionPrompt(PROMPT_KEY, '', extension_prompt_types.AFTER_PROMPT, 0);
+        if (prompt) promptManager.setPromptEnabled(prompt, false);
         return;
     }
+
+    if (prompt) promptManager.setPromptEnabled(prompt, true);
 
     const lines = ['[Abattoir Preferences]'];
 
@@ -190,7 +186,11 @@ function buildAndInject() {
 
     lines.push('[/Abattoir Preferences]');
 
-    setExtensionPrompt(PROMPT_KEY, lines.join('\n'), extension_prompt_types.AFTER_PROMPT, 0);
+    // Update the prompt entry's content if it exists in the manager
+    if (prompt) {
+        prompt.content = lines.join('\n');
+        promptManager.setPromptEnabled(prompt, true);
+    }
 }
 
 // ── Inline HTML template ──────────────────────────────────────────────────────
