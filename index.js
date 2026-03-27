@@ -1,4 +1,4 @@
-S// Abattoir Extension — companion to the Abattoir preset
+// Abattoir Extension — companion to the Abattoir preset
 // No ES module imports. SillyTavern.getContext() global only.
 
 const ABT_INJECTION_ID = "Abattoir_Prefs";
@@ -145,11 +145,11 @@ function parseChars(val) {
 // ── Phase config ──────────────────────────────────────────────────────────────
 const PHASE_CFG = {
     ERASURE: { color:"#8b0000", glow:"rgba(139,0,0,0.6)",    sigil:"⛧",  sub:"unmapping you"           },
-    BRAND:   { color:"#7a1a1a", glow:"rgba(122,26,26,0.5)",  sigil:"☉",  sub:"naming you a thing"       },
+    BRAND:   { color:"#7a1a1a", glow:"rgba(122,26,26,0.5)",  sigil:"𖤐",  sub:"naming you a thing"       },
     SCORN:   { color:"#7a3030", glow:"rgba(122,48,48,0.45)", sigil:"✕",   sub:"contempt is personal"     },
     NOTHING: { color:"#555",    glow:"rgba(100,100,100,0.3)",sigil:"·",   sub:"you don't register"       },
     TEETH:   { color:"#8b6914", glow:"rgba(139,105,20,0.45)",sigil:"⚔",  sub:"assessment begins"        },
-    GRIP:    { color:"#5c2e8b", glow:"rgba(92,46,139,0.5)",  sigil:"♆",  sub:"pattern locked"           },
+    GRIP:    { color:"#5c2e8b", glow:"rgba(92,46,139,0.5)",  sigil:"𖤐",  sub:"pattern locked"           },
     CRACK:   { color:"#1a5c8b", glow:"rgba(26,92,139,0.45)", sigil:"⚡",  sub:"something broke"          },
     TANGLE:  { color:"#8b2e5c", glow:"rgba(139,46,92,0.55)", sigil:"∞",   sub:"mutual damage"            },
 };
@@ -254,7 +254,7 @@ function abtRenderChart(fields, showLust) {
 
     // Sigils at 8 compass points
     const sigilDeg=[0,45,90,135,180,225,270,315];
-    const sigilG=["⛧","◬","☉","◬","⛧","◬","♆","◬"];
+    const sigilG=["⛧","·","𖤐","·","⛧","·","𖤐","·"];
     const sigilS=[10,5,8,5,10,5,8,5];
     const sigils=sigilDeg.map((d,i)=>{
         const p=ptAt(d,outerR+14);
@@ -343,8 +343,8 @@ function abtRenderChart(fields, showLust) {
     </svg>`;
 }
 
-// ── Vertical metric bars ─────────────────────────────────────────────────────
-function abtVertBars(fields, showLust) {
+// ── Horizontal metric bars ───────────────────────────────────────────────────
+function abtHorizBars(fields, showLust) {
     function pm(val){
         if(!val)return{value:0,delta:0};
         const n=String(val).match(/-?\d+/),d=String(val).match(/delta:\s*([+-]?\d+)/i);
@@ -358,12 +358,12 @@ function abtVertBars(fields, showLust) {
     const cLust=showLust?pm(fields.char_lust||fields.lust):null;
 
     const rows=[
-        {icon:"♡", label:"AFF",  bidir:true,  c:cAff},
-        {icon:"△", label:"FEAR", bidir:true,  c:cFear},
-        {icon:"⚸", label:"OBS",  bidir:false, c:cObs},
-        {icon:"☿", label:"TRST", bidir:true,  c:cTru},
+        {icon:"♡",label:"Affection", bidir:true,  c:cAff},
+        {icon:"△",label:"Fear",      bidir:true,  c:cFear},
+        {icon:"⛧",label:"Obsession", bidir:false, c:cObs},
+        {icon:"◈",label:"Trust",     bidir:true,  c:cTru},
     ];
-    if(cLust) rows.push({icon:"☽", label:"LUST", bidir:false, c:cLust});
+    if(cLust) rows.push({icon:"𖤐",label:"Lust",bidir:false,c:cLust});
 
     function barColor(v,bidir){
         if(!bidir)return v>60?"#b060d8":v>30?"#8040a0":"#503070";
@@ -374,35 +374,44 @@ function abtVertBars(fields, showLust) {
         return"#555566";
     }
 
-    const colsHtml = rows.map(row=>{
+    const rowsHtml = rows.map(row=>{
         const v=row.c.value, d=row.c.delta;
         const col=barColor(v,row.bidir);
         const dStr=d!==0?(d>0?`+${d}`:`${d}`):"";
         const dColor=d>0?"rgba(92,185,102,0.85)":d<0?"rgba(185,78,78,0.85)":"transparent";
         const sign=row.bidir&&v>0?"+":"";
-        const glowCol=col+"88";
 
-        let fillHtml="";
+        let barHtml="";
         if(row.bidir){
-            const pct=(Math.abs(v)/100*50).toFixed(1);
+            const pct=Math.abs(v)/100*50;
             const isNeg=v<0;
-            fillHtml=`<div style="position:absolute;left:0;right:0;${isNeg?`top:50%;border-radius:0 0 4px 4px`:`bottom:50%;border-radius:4px 4px 0 0`};height:${pct}%;background:${col};box-shadow:0 0 7px ${glowCol};"></div><div style="position:absolute;left:0;right:0;top:50%;height:1px;background:rgba(255,255,255,0.15);"></div>`;
+            barHtml=`<div style="position:relative;height:4px;background:rgba(255,255,255,0.07);border-radius:2px;flex:1;">
+                <div style="position:absolute;top:0;bottom:0;left:50%;width:1px;background:rgba(255,255,255,0.12);"></div>
+                ${isNeg
+                    ?`<div style="position:absolute;top:0;bottom:0;right:50%;width:${pct.toFixed(1)}%;background:${col};border-radius:2px 0 0 2px;max-width:50%;"></div>`
+                    :`<div style="position:absolute;top:0;bottom:0;left:50%;width:${pct.toFixed(1)}%;background:${col};border-radius:0 2px 2px 0;max-width:50%;"></div>`
+                }
+            </div>`;
         } else {
-            const pct=Math.max(2,v).toFixed(1);
-            fillHtml=`<div style="position:absolute;bottom:0;left:0;right:0;height:${pct}%;background:${col};border-radius:4px;box-shadow:0 0 7px ${glowCol};"></div>`;
+            const pct=Math.max(2,v);
+            barHtml=`<div style="position:relative;height:4px;background:rgba(255,255,255,0.07);border-radius:2px;flex:1;">
+                <div style="position:absolute;top:0;bottom:0;left:0;width:${pct}%;background:${col};border-radius:2px;"></div>
+            </div>`;
         }
 
-        return `<div style="display:flex;flex-direction:column;align-items:center;gap:2px;flex:1;min-width:0;">
-            <div style="font-size:0.82em;font-family:monospace;font-weight:700;color:${col};text-shadow:0 0 8px ${glowCol};line-height:1.2;">${sign}${v}</div>
-            <div style="font-size:0.62em;min-height:13px;color:${dStr?dColor:"transparent"};line-height:1;">${dStr||""}</div>
-            <div style="position:relative;width:10px;height:60px;background:rgba(255,255,255,0.07);border-radius:4px;overflow:hidden;">${fillHtml}</div>
-            <div style="font-size:0.82em;color:rgba(225,182,195,0.7);margin-top:3px;line-height:1;">${row.icon}</div>
-            <div style="font-size:0.54em;letter-spacing:1.5px;text-transform:uppercase;color:rgba(218,178,192,0.48);font-family:sans-serif;">${row.label}</div>
+        return `<div style="display:flex;align-items:center;gap:8px;margin:5px 0;">
+            <div style="display:flex;align-items:center;gap:5px;width:80px;flex-shrink:0;">
+                <span style="font-size:0.82em;color:rgba(212,168,182,0.65);">${row.icon}</span>
+                <span style="font-size:0.7em;letter-spacing:1px;text-transform:uppercase;color:rgba(218,178,192,0.72);font-family:sans-serif;">${row.label}</span>
+            </div>
+            <span style="font-size:0.88em;font-family:monospace;font-weight:700;color:${col};min-width:34px;text-align:right;">${sign}${v}</span>
+            ${dStr?`<span style="font-size:0.72em;color:${dColor};min-width:26px;">${dStr}</span>`:`<span style="min-width:26px;"></span>`}
+            ${barHtml}
         </div>`;
     }).join("");
 
-    return `<div style="display:flex;gap:4px;padding:8px 16px 12px;justify-content:space-around;">
-        ${colsHtml}
+    return `<div style="padding:6px 16px 10px;">
+        ${rowsHtml}
     </div>`;
 }
 
@@ -450,31 +459,30 @@ function abtRenderCard(fields, s) {
             <div style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:2.8em;opacity:0.06;color:${pCfg.color};line-height:1;pointer-events:none;">${pCfg.sigil}</div>
             <!-- Intensity + condition chips — most important at top -->
             <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:7px;">
-                ${intensity ? `<span style="font-size:0.62em;letter-spacing:2px;text-transform:uppercase;padding:3px 9px;border:0.5px solid ${iColor}88;border-radius:10px;color:${iColor};font-family:sans-serif;font-weight:600;text-shadow:0 0 10px ${iColor}66;">${abtEsc(fields.intensity)}</span>` : ""}
-                <span style="font-size:0.62em;letter-spacing:2px;text-transform:uppercase;padding:3px 9px;border:0.5px solid ${cColor}88;border-radius:10px;color:${cColor};font-family:sans-serif;font-weight:600;text-shadow:0 0 10px ${cColor}55;">${abtEsc(condition)}</span>
+                ${intensity ? `<span style="font-size:0.62em;letter-spacing:2px;text-transform:uppercase;padding:3px 9px;border:0.5px solid ${iColor}88;border-radius:10px;color:${iColor};font-family:sans-serif;font-weight:600;">${abtEsc(fields.intensity)}</span>` : ""}
+                <span style="font-size:0.62em;letter-spacing:2px;text-transform:uppercase;padding:3px 9px;border:0.5px solid ${cColor}88;border-radius:10px;color:${cColor};font-family:sans-serif;font-weight:600;">${abtEsc(condition)}</span>
             </div>
             <!-- Phase badge + subtitle -->
-            <div style="font-size:0.5em;letter-spacing:3px;text-transform:uppercase;color:rgba(200,155,170,0.38);font-family:sans-serif;margin-bottom:4px;">☿ relationship phase</div>
             <div style="display:flex;align-items:baseline;gap:8px;">
-                <span style="font-size:0.62em;letter-spacing:4px;text-transform:uppercase;padding:2px 8px;border:0.5px solid ${pCfg.color}55;border-radius:3px;color:${pCfg.color};font-family:sans-serif;text-shadow:0 0 10px ${pCfg.glow},0 0 22px ${pCfg.glow};">${phase}</span>
-                <span style="font-size:0.68em;color:rgba(222,188,200,0.78);font-style:italic;text-shadow:0 0 12px rgba(180,80,100,0.3);">${pCfg.sub}</span>
+                <span style="font-size:0.62em;letter-spacing:4px;text-transform:uppercase;padding:2px 8px;border:0.5px solid ${pCfg.color}55;border-radius:3px;color:${pCfg.color};font-family:sans-serif;text-shadow:0 0 10px ${pCfg.glow};">${phase}</span>
+                <span style="font-size:0.68em;color:rgba(222,188,200,0.78);font-style:italic;">${pCfg.sub}</span>
             </div>
         </div>
 
         <!-- World state -->
         ${s.ibWorld && (location||weather) ? `<div style="padding:5px 14px;border-bottom:0.5px solid rgba(255,255,255,0.04);display:flex;gap:12px;flex-wrap:wrap;">
-            ${location ? `<span style="font-size:0.71em;color:rgba(215,185,195,0.9);font-style:italic;">◬ ${abtEsc(location)}</span>` : ""}
-            ${weather  ? `<span style="font-size:0.71em;color:rgba(210,180,190,0.82);font-style:italic;">☽ ${abtEsc(weather)}</span>` : ""}
+            ${location ? `<span style="font-size:0.71em;color:rgba(215,185,195,0.9);font-style:italic;">📍 ${abtEsc(location)}</span>` : ""}
+            ${weather  ? `<span style="font-size:0.71em;color:rgba(210,180,190,0.82);font-style:italic;">☁ ${abtEsc(weather)}</span>` : ""}
         </div>` : ""}
 
         <!-- Chart full-width, then horizontal bars below -->
         ${s.ibChart ? `<div style="padding:6px 0 0;">${abtRenderChart(fields, s.ibLust)}</div>` : ""}
-        ${abtVertBars(fields, s.ibLust)}
+        ${abtHorizBars(fields, s.ibLust)}
 
         <!-- Injuries + Dignity -->
         ${s.ibInjuries && (injuries||dignity) ? `<div style="padding:0 14px 10px;border-top:0.5px solid rgba(255,255,255,0.04);margin-top:2px;">
-            ${injuries ? `<div style="margin-top:7px;font-size:0.73em;color:rgba(225,135,110,0.95);font-style:italic;text-shadow:0 0 10px rgba(200,80,50,0.4);">ᛉ ${abtEsc(injuries)}</div>` : ""}
-            ${dignity  ? `<div style="margin-top:3px;font-size:0.71em;color:rgba(195,165,178,0.9);font-style:italic;">⚸ ${abtEsc(dignity)}</div>`  : ""}
+            ${injuries ? `<div style="margin-top:7px;font-size:0.73em;color:rgba(225,135,110,0.95);font-style:italic;">⚔ ${abtEsc(injuries)}</div>` : ""}
+            ${dignity  ? `<div style="margin-top:3px;font-size:0.71em;color:rgba(195,165,178,0.9);font-style:italic;">◈ ${abtEsc(dignity)}</div>`  : ""}
         </div>` : ""}
 
         <!-- Active bundles -->
@@ -488,7 +496,7 @@ function abtRenderCard(fields, s) {
 
         <!-- Footer -->
         <div style="padding:3px 14px 4px;border-top:0.5px solid rgba(255,255,255,0.025);display:flex;justify-content:space-between;">
-            <span style="font-size:0.52em;color:rgba(180,50,50,0.4);text-shadow:0 0 8px rgba(180,50,50,0.3);">⛧ · ☽ · ⛧</span>
+            <span style="font-size:0.52em;color:rgba(180,50,50,0.35);">⛧ · 𖤐 · ⛧</span>
             <span style="font-size:0.52em;color:rgba(200,155,170,0.3);letter-spacing:2px;">Λ𝔅Λ𝕋𝕋𝕆ℝ</span>
         </div>
     </div>`;
