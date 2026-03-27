@@ -70,6 +70,16 @@ function abtBuildPrompt(s) {
         const types = Object.entries(s.evtTypes).filter(([,v])=>v).map(([k])=>ABT_EVT_LABELS[k]||k);
         L.push("Random Events: ENABLED — Frequency: " + (ABT_FREQ_LABELS[s.evtFreq]||s.evtFreq));
         if (types.length) L.push("  Types: " + types.join(", "));
+        // Lean dice logic — replaces verbose per-bundle dice templates
+        L.push("");
+        L.push("[Dice Protocol — Lilith's Dice]");
+        L.push("For EACH active bundle, roll 1d6 for occurrence inside <think>. Keep it compact:");
+        L.push("  Weather: 1 silence, 2-3 distant, 4-5 present, 6 intrusion → if fires: pick category from bundle");
+        L.push("  Teeth: 1-2 no event, 3-5 fires, 6 fires+interrupts → pick target → pick sub-type from bundle");
+        L.push("  Knock: 1-3 no threat, 4-5 advances, 6 detonates → pick vector from bundle");
+        L.push("  Rust: 1-3 seed only, 4-5 fires, 6 fires+forces response → pick domain from bundle");
+        L.push("Log results as ONE line per bundle in <think>. Do NOT restate dice tables or explain roll logic.");
+        L.push("Events summary goes in the infoblock 'bundles' field.");
     } else {
         L.push("Random Events: DISABLED");
     }
@@ -85,10 +95,11 @@ function abtBuildPrompt(s) {
     L.push("condition: [intact/marked/injured/critical/dying/dead]");
     L.push("injuries: [cumulative or none]");
     L.push("dignity: [what remains · what is gone]");
+    L.push("date: [DD.MM.YYYY, Day — HH:MM]");
     L.push("location: [specific place]");
     L.push("weather: [sky · temp · wind]");
-    L.push("bundles: [active bundle names or none]");
-    if (s.ibChars) L.push('characters: [{"name":"...","attire":"...","mood":"...","thought":"..."}] for each NPC present');
+    if (s.evtEnabled) L.push("bundles: [active bundle names or none]");
+    if (s.ibChars) L.push('characters: [{"name":"...","attire":"...","mood":"...","thought":"..."}] for {{char}} AND each NPC present');
     L.push("char_affection: [int -100 to 100, delta:±N]");
     L.push("char_fear: [int -100 to 100, delta:±N]");
     L.push("char_obsession: [int 0 to 100, delta:±N]");
@@ -96,12 +107,61 @@ function abtBuildPrompt(s) {
     if (s.ibLust) L.push("char_lust: [int 0 to 100, delta:±N]");
     L.push("</infoblock>");
     L.push("");
-    L.push("Use char_* prefixes exactly. Track only the character's feelings toward {{user}}.");
+    L.push("Use char_* prefixes exactly. Track only {{char}}'s feelings toward {{user}}. Do NOT include user_affection, user_fear, user_obsession, user_trust — those fields do not exist. Do NOT track or infer {{user}}'s emotions in COT or infoblock. Only the character's perspective matters.");
+    L.push("Track date consistently — advance time realistically between turns. If no date established, derive one from context on first turn and commit.");
 
-    const themes = Object.entries(s.content).filter(([,v])=>v).map(([k])=>ABT_CTX_LABELS[k]||k);
+    // ── Violence Level — behavioral rules ──
+    const vioRules = {
+        mild: [
+            "[Violence: Mild]",
+            "Violence is implied, off-screen, or minimal. Bruises and scrapes at most. Threats carry weight through atmosphere, not action. Pain is referenced, not described in detail. No gore, no graphic injury descriptions. Tension does the work."
+        ],
+        moderate: [
+            "[Violence: Moderate]",
+            "Violence is present and described but not lingered on. Injuries are real — cuts, blood, impact — written with enough specificity to feel it, not enough to dwell. Aftermath matters more than the act. The body reacts realistically. No gratuitous escalation."
+        ],
+        graphic: [
+            "[Violence: Graphic]",
+            "Violence is rendered with forensic specificity. Sound of impact, the way tissue responds, what blood looks like on specific surfaces. Injuries are described anatomically. Pain is visceral and sustained. The body is a physical object subject to physics. Nothing is implied — everything lands on the page."
+        ],
+        extreme: [
+            "[Violence: Extreme]",
+            "No limits on violence depiction. Write what happens to bodies when force is applied without restraint. Bone, nerve, organ. The sounds the body makes. What dying looks like up close. Injuries are cumulative, permanent, and described with clinical precision. The prose does not flinch, does not cut away, does not soften."
+        ]
+    };
+    const vr = vioRules[s.violenceLevel] || vioRules.moderate;
     L.push("");
-    L.push("Violence Level: " + (ABT_VIO_LABELS[s.violenceLevel]||s.violenceLevel));
-    if (themes.length) L.push("Enabled Themes: " + themes.join(", "));
+    vr.forEach(line => L.push(line));
+
+    // ── Dark Themes — specific permissions and behavioral instructions ──
+    const themeRules = {
+        psychologicalHorror: "Psychological Horror: Gaslighting, paranoia, unreliable perception, dread without visible source. The mind turning against itself. What characters believe may not be real. Write the doubt.",
+        torture: "Torture: Deliberate, sustained infliction of pain as tool — for information, for punishment, for control, or for its own sake. Write the method, the patience of the one inflicting, the deterioration of the one enduring. Torture has rhythm.",
+        suffering: "Suffering: Prolonged distress — physical, emotional, existential. Characters endure. Relief is withheld or conditional. The prose sits with pain rather than resolving it. Suffering changes people; write the change.",
+        dominanceSubmission: "Dominance & Submission: Power exchange is explicit and embodied. Who kneels, who commands, who breaks eye contact first. D/s dynamics permeate gesture, posture, speech patterns, spatial positioning. It's in how someone hands over a glass of water.",
+        captivity: "Captivity: Confinement shapes everything — space, time, routine, identity. The confined person's world shrinks to what the captor permits. Write the architecture of captivity: locks, schedules, the sound of footsteps that mean something is about to happen. Freedom is theoretical.",
+        controlManipulation: "Control & Manipulation: Subtle rewriting of reality. The manipulator rewrites history, reframes cruelty as care, makes the target doubt their own memory. Isolation as strategy. Kindness as currency. Write the mechanism, not just the effect.",
+        romance: "Romance: Genuine feeling exists alongside everything else. Tenderness is not safety — it's another kind of exposure. Attachment forms in hostile conditions and is more dangerous for it. Love and damage coexist without one negating the other.",
+        explicitSexual: "Explicit Sexual Content: Sex is rendered with anatomical frankness. Write the mechanics — what goes where, what it feels like, what the body does involuntarily. Fluids, sounds, the gracelessness of real bodies. Sex serves character and power dynamics, never just titillation.",
+        monsterRomance: "Monster Romance: The non-human partner's body is written with specificity — texture, temperature, proportion, what's different and what that difference means during intimacy. The alien quality is the point. Attraction and revulsion share space.",
+        nonhumanEntities: "Non-human Entities: Creatures, spirits, constructs, or beings that do not think like humans. Their logic is their own. Write their alienness through behavior, not exposition. They may not understand human distress. They may understand it differently."
+    };
+    const activeThemes = Object.entries(s.content).filter(([,v])=>v);
+    if (activeThemes.length) {
+        L.push("");
+        L.push("[Content Permissions — Active Themes]");
+        L.push("The following themes are ENABLED. Write them when the scene calls for them. Do not sanitize, fade to black, or hedge.");
+        activeThemes.forEach(([k]) => {
+            if (themeRules[k]) L.push(themeRules[k]);
+        });
+    }
+    // Note what's OFF — explicit boundary
+    const inactiveThemes = Object.entries(s.content).filter(([,v])=>!v);
+    if (inactiveThemes.length) {
+        const offNames = inactiveThemes.map(([k])=>ABT_CTX_LABELS[k]||k);
+        L.push("");
+        L.push("[Content Boundaries] These themes are DISABLED — do not introduce: " + offNames.join(", ") + ".");
+    }
 
     L.push("[/Abattoir Extension]");
     return L.join("\n");
@@ -161,12 +221,69 @@ const INTENSITY_COLORS = {
     ember:"#8b5a20", fever:"#8b7020", wildfire:"#8b2a10", ash:"#5a5a6a", terminal:"#6b0010"
 };
 
+// ── Infoblock Color Schemes ──────────────────────────────────────────────────
+const ABT_SCHEMES = {
+    blood: {
+        name: "Blood Ritual",
+        bg: "linear-gradient(160deg,rgba(8,5,7,0.99) 0%,rgba(13,8,11,0.97) 100%)",
+        border: "rgba(150,45,45,0.18)", headerBg: "rgba(0,0,0,0.38)",
+        accent: "150,45,45", text: "rgba(220,190,200,0.92)", textDim: "rgba(200,160,175,0.45)",
+        sigils: "rgba(200,58,58,", footer: "rgba(180,50,50,0.35)",
+        barTrack: "rgba(255,255,255,0.06)", charBorder: "rgba(180,50,50,0.3)",
+        gridStroke: "rgba(178,48,48,", circleGlow: "rgba(162,42,42,",
+        labelColor: "rgba(225,182,195,0.6)", footerText: "Λ𝔅Λ𝕋𝕋𝕆ℝ",
+    },
+    void: {
+        name: "Void",
+        bg: "linear-gradient(160deg,rgba(5,5,10,0.99) 0%,rgba(8,6,14,0.97) 100%)",
+        border: "rgba(60,45,120,0.2)", headerBg: "rgba(0,0,0,0.4)",
+        accent: "80,50,160", text: "rgba(195,185,220,0.92)", textDim: "rgba(160,145,200,0.45)",
+        sigils: "rgba(120,70,200,", footer: "rgba(100,60,180,0.35)",
+        barTrack: "rgba(255,255,255,0.05)", charBorder: "rgba(120,60,180,0.3)",
+        gridStroke: "rgba(100,55,180,", circleGlow: "rgba(80,40,150,",
+        labelColor: "rgba(195,180,225,0.6)", footerText: "⸸ 𝕍𝕆𝕀𝔻 ⸸",
+    },
+    bone: {
+        name: "Bone & Ash",
+        bg: "linear-gradient(160deg,rgba(12,11,10,0.99) 0%,rgba(16,14,12,0.97) 100%)",
+        border: "rgba(140,120,90,0.18)", headerBg: "rgba(0,0,0,0.35)",
+        accent: "140,115,75", text: "rgba(220,210,190,0.92)", textDim: "rgba(180,165,140,0.45)",
+        sigils: "rgba(180,150,100,", footer: "rgba(150,130,90,0.35)",
+        barTrack: "rgba(255,255,255,0.05)", charBorder: "rgba(160,130,80,0.3)",
+        gridStroke: "rgba(160,130,80,", circleGlow: "rgba(140,110,60,",
+        labelColor: "rgba(220,205,180,0.6)", footerText: "☽ ᴀsʜ ☽",
+    },
+    frost: {
+        name: "Frost",
+        bg: "linear-gradient(160deg,rgba(5,8,12,0.99) 0%,rgba(8,11,16,0.97) 100%)",
+        border: "rgba(60,100,140,0.18)", headerBg: "rgba(0,0,0,0.38)",
+        accent: "60,110,150", text: "rgba(190,210,225,0.92)", textDim: "rgba(140,170,200,0.45)",
+        sigils: "rgba(80,140,200,", footer: "rgba(60,120,180,0.35)",
+        barTrack: "rgba(255,255,255,0.05)", charBorder: "rgba(70,130,180,0.3)",
+        gridStroke: "rgba(60,120,180,", circleGlow: "rgba(40,100,160,",
+        labelColor: "rgba(185,210,230,0.6)", footerText: "❄ 𝔣𝔯𝔬𝔰𝔱 ❄",
+    },
+    moss: {
+        name: "Moss & Decay",
+        bg: "linear-gradient(160deg,rgba(6,9,6,0.99) 0%,rgba(10,13,8,0.97) 100%)",
+        border: "rgba(60,100,50,0.18)", headerBg: "rgba(0,0,0,0.38)",
+        accent: "70,110,55", text: "rgba(195,215,185,0.92)", textDim: "rgba(150,180,130,0.45)",
+        sigils: "rgba(90,150,60,", footer: "rgba(70,120,50,0.35)",
+        barTrack: "rgba(255,255,255,0.05)", charBorder: "rgba(80,130,55,0.3)",
+        gridStroke: "rgba(70,120,50,", circleGlow: "rgba(55,100,40,",
+        labelColor: "rgba(190,215,175,0.6)", footerText: "⌇ ᴅᴇᴄᴀʏ ⌇",
+    },
+};
+
+function abtScheme() {
+    return ABT_SCHEMES[localStorage.getItem("ABT_scheme") || "blood"] || ABT_SCHEMES.blood;
+}
+
+
 // ── Ritual pentagram chart ──────────────────────────────────────────────────
-// Pentagram with 5 axes: Affection(top), Fear(top-right), Obsession(bottom-right), Trust(bottom-left), Lust(top-left if enabled)
-// Only char metrics shown — user tracking removed
 function abtRenderChart(fields, showLust) {
-    const W=340, H=340, cx=170, cy=168, r=85;
-    const outerR=r+22, innerR=r+12;
+    const W=300, H=300, cx=150, cy=150, r=78;
+    const outerR=r+20, innerR=r+10;
 
     function pm(val) {
         if (!val) return {value:0,delta:0};
@@ -174,8 +291,12 @@ function abtRenderChart(fields, showLust) {
         return {value:n?Math.max(-100,Math.min(100,parseInt(n[0]))):0, delta:d?parseInt(d[1]):0};
     }
     const MIN=0.09;
-    function nd(v){const n=v/100;return n>=0?Math.max(MIN,n):Math.min(-MIN,n);}
-    function nu(v){return Math.max(MIN,v/100);}
+    // All metrics: outward = more intense. Center = zero/neutral.
+    // For bidirectional: absolute value determines distance. Sign determines color.
+    function normalizeMetric(v, bidir) {
+        if (bidir) return Math.max(MIN, Math.abs(v) / 100);
+        return Math.max(MIN, v / 100);
+    }
 
     const cAff=pm(fields.char_affection||fields.affection);
     const cFear=pm(fields.char_fear||fields.fear);
@@ -183,253 +304,229 @@ function abtRenderChart(fields, showLust) {
     const cTru=pm(fields.char_trust||fields.trust);
     const cLust=showLust?pm(fields.char_lust||fields.lust):null;
 
-    // Pentagram: 5 axes evenly spaced at 72° intervals
-    // If no lust: 4 axes as diamond (0,90,180,270)
     const axes = showLust ? [
-        {deg:270, name:"AFF",  m:cAff,  bidir:true},
-        {deg:342, name:"FEAR", m:cFear, bidir:true},
-        {deg:54,  name:"OBS",  m:cObs,  bidir:false},
-        {deg:126, name:"TRST", m:cTru,  bidir:true},
-        {deg:198, name:"LUST", m:cLust, bidir:false},
+        {deg:270, name:"AFF",  m:cAff,  bidir:true,  sigil:"♡"},
+        {deg:342, name:"FEAR", m:cFear, bidir:true,  sigil:"◬"},
+        {deg:54,  name:"OBS",  m:cObs,  bidir:false, sigil:"☉"},
+        {deg:126, name:"TRST", m:cTru,  bidir:true,  sigil:"◈"},
+        {deg:198, name:"LUST", m:cLust, bidir:false, sigil:"☾"},
     ] : [
-        {deg:0,   name:"AFF",  m:cAff,  bidir:true},
-        {deg:90,  name:"FEAR", m:cFear, bidir:true},
-        {deg:180, name:"OBS",  m:cObs,  bidir:false},
-        {deg:270, name:"TRST", m:cTru,  bidir:true},
+        {deg:0,   name:"AFF",  m:cAff,  bidir:true,  sigil:"♡"},
+        {deg:90,  name:"FEAR", m:cFear, bidir:true,  sigil:"◬"},
+        {deg:180, name:"OBS",  m:cObs,  bidir:false, sigil:"☉"},
+        {deg:270, name:"TRST", m:cTru,  bidir:true,  sigil:"◈"},
     ];
     const N=axes.length;
 
     function toRad(deg){return (deg-90)*Math.PI/180;}
     function ptAt(deg,dist){const rad=toRad(deg);return {x:cx+dist*Math.cos(rad),y:cy+dist*Math.sin(rad)};}
 
-    // Data shape points
     const dataPts = axes.map(a=>{
-        const norm = a.bidir ? nd(a.m.value) : nu(a.m.value);
+        const norm = normalizeMetric(a.m.value, a.bidir);
         return ptAt(a.deg, r*norm);
     });
 
-    // Color based on dominant emotion
+    // Polygon color based on overall emotional state
     const cIsHate=cAff.value<-20;
     const cStroke=cIsHate?"rgba(215,58,58,0.88)":cAff.value>40?"rgba(185,98,160,0.78)":"rgba(135,88,155,0.68)";
     const cFill=cIsHate?"rgba(155,22,22,0.22)":cAff.value>40?"rgba(145,68,118,0.18)":"rgba(88,58,108,0.15)";
 
-    // Grid shapes (polygon at 33%, 66%, 100%)
+    // Per-axis dot color: green = positive, red = negative, purple = unidirectional
+    function dotColor(a) {
+        if (!a.bidir) return a.m.value > 50 ? "rgba(188,118,238,0.9)" : "rgba(148,108,198,0.75)";
+        if (a.m.value > 0) return "rgba(92,195,112,0.9)";
+        if (a.m.value < 0) return "rgba(215,68,68,0.9)";
+        return "rgba(150,150,160,0.6)";
+    }
+
     function gridPoly(f){
         const rr=r*f;
         return axes.map(a=>ptAt(a.deg,rr)).map((p,i)=>((i===0?"M":"L")+p.x.toFixed(1)+","+p.y.toFixed(1))).join("")+"Z";
     }
 
-    // Pentagram star (connect every-other vertex for 5 axes, or X for 4)
-    let starLines="";
+    // Star lines
+    let starSVG="";
     if(N===5){
-        const sp=axes.map(a=>ptAt(a.deg,outerR-4));
-        starLines=[0,1,2,3,4].map(i=>{
+        const sp=axes.map(a=>ptAt(a.deg,outerR-3));
+        starSVG=[0,1,2,3,4].map(i=>{
             const j=(i+2)%5;
-            return `<line x1="${sp[i].x.toFixed(1)}" y1="${sp[i].y.toFixed(1)}" x2="${sp[j].x.toFixed(1)}" y2="${sp[j].y.toFixed(1)}" stroke="rgba(175,48,48,0.18)" stroke-width="0.6"/>`;
+            return '<line x1="'+sp[i].x.toFixed(1)+'" y1="'+sp[i].y.toFixed(1)+'" x2="'+sp[j].x.toFixed(1)+'" y2="'+sp[j].y.toFixed(1)+'" stroke="rgba(180,45,45,0.2)" stroke-width="0.6"/>';
         }).join("");
     } else {
-        // Diamond cross-lines
-        starLines=`
-            <line x1="${cx}" y1="${cy-r}" x2="${cx}" y2="${cy+r}" stroke="rgba(175,48,48,0.18)" stroke-width="0.5"/>
-            <line x1="${cx-r}" y1="${cy}" x2="${cx+r}" y2="${cy}" stroke="rgba(175,48,48,0.18)" stroke-width="0.5"/>
-            <line x1="${(cx-r*0.707).toFixed(1)}" y1="${(cy-r*0.707).toFixed(1)}" x2="${(cx+r*0.707).toFixed(1)}" y2="${(cy+r*0.707).toFixed(1)}" stroke="rgba(175,48,48,0.1)" stroke-width="0.5"/>
-            <line x1="${(cx+r*0.707).toFixed(1)}" y1="${(cy-r*0.707).toFixed(1)}" x2="${(cx-r*0.707).toFixed(1)}" y2="${(cy+r*0.707).toFixed(1)}" stroke="rgba(175,48,48,0.1)" stroke-width="0.5"/>`;
+        const dp=axes.map(a=>ptAt(a.deg,outerR-3));
+        starSVG='<line x1="'+dp[0].x.toFixed(1)+'" y1="'+dp[0].y.toFixed(1)+'" x2="'+dp[2].x.toFixed(1)+'" y2="'+dp[2].y.toFixed(1)+'" stroke="rgba(180,45,45,0.18)" stroke-width="0.5"/>';
+        starSVG+='<line x1="'+dp[1].x.toFixed(1)+'" y1="'+dp[1].y.toFixed(1)+'" x2="'+dp[3].x.toFixed(1)+'" y2="'+dp[3].y.toFixed(1)+'" stroke="rgba(180,45,45,0.18)" stroke-width="0.5"/>';
+        const d45=[45,135,225,315].map(d=>ptAt(d,outerR-3));
+        starSVG+='<line x1="'+d45[0].x.toFixed(1)+'" y1="'+d45[0].y.toFixed(1)+'" x2="'+d45[2].x.toFixed(1)+'" y2="'+d45[2].y.toFixed(1)+'" stroke="rgba(180,45,45,0.1)" stroke-width="0.5"/>';
+        starSVG+='<line x1="'+d45[1].x.toFixed(1)+'" y1="'+d45[1].y.toFixed(1)+'" x2="'+d45[3].x.toFixed(1)+'" y2="'+d45[3].y.toFixed(1)+'" stroke="rgba(180,45,45,0.1)" stroke-width="0.5"/>';
     }
 
-    // Axis lines from center to outer ring
     const axisLines=axes.map(a=>{
         const p=ptAt(a.deg,outerR);
-        return `<line x1="${cx}" y1="${cy}" x2="${p.x.toFixed(1)}" y2="${p.y.toFixed(1)}" stroke="rgba(175,48,48,0.15)" stroke-width="0.5" stroke-dasharray="2 3"/>`;
+        return '<line x1="'+cx+'" y1="'+cy+'" x2="'+p.x.toFixed(1)+'" y2="'+p.y.toFixed(1)+'" stroke="rgba(175,48,48,0.13)" stroke-width="0.5" stroke-dasharray="2 3"/>';
     }).join("");
 
-    // Outer ring ticks (24 evenly spaced)
-    const ticks=Array.from({length:24},(_,i)=>{
-        const deg=i*15, rad=toRad(deg);
-        const isMajor=axes.some(a=>Math.abs(((a.deg-deg+360)%360))<3);
-        const r1=outerR+(isMajor?0:-1),r2=outerR+(isMajor?8:3);
-        const x1=cx+r1*Math.cos(rad),y1=cy+r1*Math.sin(rad);
-        const x2=cx+r2*Math.cos(rad),y2=cy+r2*Math.sin(rad);
-        return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${isMajor?"rgba(205,62,62,0.6)":"rgba(178,52,52,0.25)"}" stroke-width="${isMajor?"1":"0.5"}"/>`;
+    // Occult sigils at 8 compass points
+    const occultSymbols=[
+        {deg:0,   glyph:"⛧", size:13, op:0.4},
+        {deg:45,  glyph:"☽", size:12, op:0.28},
+        {deg:90,  glyph:"✠", size:12, op:0.35},
+        {deg:135, glyph:"☆", size:11, op:0.28},
+        {deg:180, glyph:"⛧", size:13, op:0.4},
+        {deg:225, glyph:"☿", size:12, op:0.28},
+        {deg:270, glyph:"✠", size:12, op:0.35},
+        {deg:315, glyph:"◬", size:11, op:0.28},
+    ];
+    const sigils=occultSymbols.map(s=>{
+        const p=ptAt(s.deg,outerR+14);
+        return '<text x="'+p.x.toFixed(1)+'" y="'+p.y.toFixed(1)+'" text-anchor="middle" dominant-baseline="middle" fill="rgba(200,58,58,'+s.op+')" font-size="'+s.size+'" font-family="serif">'+s.glyph+'</text>';
     }).join("");
 
-    // Sigils at 8 compass points
-    const sigilDeg=[0,45,90,135,180,225,270,315];
-    const sigilG=["⛧","·","𖤐","·","⛧","·","𖤐","·"];
-    const sigilS=[10,5,8,5,10,5,8,5];
-    const sigils=sigilDeg.map((d,i)=>{
-        const p=ptAt(d,outerR+14);
-        return `<text x="${p.x.toFixed(1)}" y="${p.y.toFixed(1)}" text-anchor="middle" dominant-baseline="middle" fill="rgba(200,58,58,${i%2===0?"0.45":"0.18"})" font-size="${sigilS[i]}" font-family="serif">${sigilG[i]}</text>`;
-    }).join("");
-
-    // Lust orbit at center
-    const lustSVG=cLust?(()=>{
-        const lR=15,lAng=(cLust.value/100)*360-90;
-        const lx=cx+lR*Math.cos(lAng*Math.PI/180),ly=cy+lR*Math.sin(lAng*Math.PI/180);
-        const op=(0.3+(cLust.value/100)*0.62).toFixed(2);
-        return `<circle cx="${cx}" cy="${cy}" r="${lR}" fill="none" stroke="rgba(188,78,118,0.22)" stroke-width="0.5" stroke-dasharray="2 2"/>
-        <circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="2.5" fill="rgba(218,88,138,${op})"/>`;
+    const lustSVG=cLust?(function(){
+        var lR=14,lAng=(cLust.value/100)*360-90;
+        var lx=cx+lR*Math.cos(lAng*Math.PI/180),ly=cy+lR*Math.sin(lAng*Math.PI/180);
+        var op=(0.3+(cLust.value/100)*0.62).toFixed(2);
+        return '<circle cx="'+cx+'" cy="'+cy+'" r="'+lR+'" fill="none" stroke="rgba(188,78,118,0.2)" stroke-width="0.5" stroke-dasharray="2 2"/><circle cx="'+lx.toFixed(1)+'" cy="'+ly.toFixed(1)+'" r="2.5" fill="rgba(218,88,138,'+op+')"/>';
     })():"";
 
-    // Phase label inside circle
     const phase=(fields.phase||"NOTHING").toUpperCase().replace(/[^A-Z]/g,"");
     const phColors={ERASURE:"rgba(205,42,42,0.62)",BRAND:"rgba(175,42,42,0.52)",SCORN:"rgba(155,58,58,0.52)",NOTHING:"rgba(125,105,125,0.48)",TEETH:"rgba(165,135,52,0.52)",GRIP:"rgba(125,62,175,0.58)",CRACK:"rgba(52,115,165,0.52)",TANGLE:"rgba(165,58,115,0.58)"};
     const phColor=phColors[phase]||"rgba(125,105,125,0.48)";
 
-    // Axis labels with values — positioned well outside the ring
     const axisLabels = axes.map(a=>{
-        const labelR=outerR+32;
+        const labelR=outerR+30;
         const p=ptAt(a.deg, labelR);
         const cSign=a.bidir&&a.m.value>0?"+":"";
         const cColor=a.bidir?(a.m.value<-40?"rgba(228,82,82,1)":a.m.value<0?"rgba(208,118,118,0.95)":a.m.value>40?"rgba(102,218,142,0.95)":"rgba(188,168,188,0.85)"):(a.m.value>50?"rgba(188,118,238,1)":"rgba(168,138,208,0.9)");
-        const dStr=a.m.delta!==0?(a.m.delta>0?`+${a.m.delta}`:`${a.m.delta}`):"";
+        const dStr=a.m.delta!==0?(a.m.delta>0?"+"+a.m.delta:""+a.m.delta):"";
         const dColor=a.m.delta>0?"rgba(92,185,102,0.85)":"rgba(185,78,78,0.85)";
 
-        // Smart anchoring based on position
         let anchor="middle", dx=0, dy=0;
         const normDeg=(a.deg+360)%360;
         if(normDeg>45&&normDeg<135){anchor="start";dx=4;}
         else if(normDeg>225&&normDeg<315){anchor="end";dx=-4;}
-        if(normDeg<45||normDeg>315){dy=-6;}
-        else if(normDeg>135&&normDeg<225){dy=8;}
+        if(normDeg<45||normDeg>315){dy=-5;}
+        else if(normDeg>135&&normDeg<225){dy=7;}
 
         const nx=p.x+dx, ny=p.y+dy;
-        return `<text x="${nx.toFixed(1)}" y="${(ny-6).toFixed(1)}" text-anchor="${anchor}" dominant-baseline="middle" fill="rgba(225,182,195,0.65)" font-size="7.5" font-family="sans-serif" letter-spacing="1.8">${a.name}</text>
-        <text x="${nx.toFixed(1)}" y="${(ny+7).toFixed(1)}" text-anchor="${anchor}" dominant-baseline="middle" fill="${cColor}" font-size="12" font-family="monospace" font-weight="700">${cSign}${a.m.value}${dStr?` <tspan fill="${dColor}" font-size="9">${dStr}</tspan>`:""}</text>`;
+        return '<text x="'+nx.toFixed(1)+'" y="'+(ny-6).toFixed(1)+'" text-anchor="'+anchor+'" dominant-baseline="middle" fill="rgba(225,182,195,0.6)" font-size="7" font-family="sans-serif" letter-spacing="1.5">'+a.name+'</text><text x="'+nx.toFixed(1)+'" y="'+(ny+7).toFixed(1)+'" text-anchor="'+anchor+'" dominant-baseline="middle" fill="'+cColor+'" font-size="12" font-family="monospace" font-weight="700">'+cSign+a.m.value+(dStr?' <tspan fill="'+dColor+'" font-size="9">'+dStr+'</tspan>':"")+'</text>';
     }).join("");
 
-    // Data shape path
     const dataPath=dataPts.map((p,i)=>((i===0?"M":"L")+p.x.toFixed(1)+","+p.y.toFixed(1))).join("")+"Z";
+    const fid="ag"+Math.random().toString(36).slice(2,8);
 
-    return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:${W}px;height:auto;display:block;margin:0 auto;">
-        <defs><filter id="ag"><feGaussianBlur stdDeviation="1.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
-
-        <!-- Outer rings -->
-        <circle cx="${cx}" cy="${cy}" r="${outerR+3}" fill="none" stroke="rgba(162,42,42,0.08)" stroke-width="0.5"/>
-        <circle cx="${cx}" cy="${cy}" r="${outerR}" fill="none" stroke="rgba(178,48,48,0.28)" stroke-width="0.7"/>
-
-        <!-- Pentagram star -->
-        ${starLines}
-
-        <!-- Tick marks -->
-        ${ticks}
-
-        <!-- Sigils -->
-        ${sigils}
-
-        <!-- Inner ring -->
-        <circle cx="${cx}" cy="${cy}" r="${innerR}" fill="none" stroke="rgba(172,48,48,0.18)" stroke-width="0.5"/>
-
-        <!-- Grid polygons -->
-        <path d="${gridPoly(0.33)}" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="0.5"/>
-        <path d="${gridPoly(0.66)}" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="0.5"/>
-        <path d="${gridPoly(1)}"    fill="none" stroke="rgba(178,48,48,0.25)"   stroke-width="0.7"/>
-
-        <!-- Axis lines -->
-        ${axisLines}
-
-        <!-- Center -->
-        <circle cx="${cx}" cy="${cy}" r="2" fill="rgba(188,52,52,0.5)"/>
-        ${lustSVG}
-
-        <!-- Data shape -->
-        <path d="${dataPath}" fill="${cFill}" stroke="${cStroke}" stroke-width="1.4" filter="url(#ag)"/>
-        ${dataPts.map(p=>`<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.5" fill="${cStroke}" opacity="0.94"/>`).join("")}
-
-        <!-- Phase inside circle -->
-        <text x="${cx}" y="${cy+r-12}" text-anchor="middle" dominant-baseline="middle" fill="${phColor}" font-size="8" font-family="sans-serif" letter-spacing="3">${phase}</text>
-
-        <!-- Axis labels with values -->
-        ${axisLabels}
-    </svg>`;
+    return '<svg viewBox="0 0 '+W+' '+H+'" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:'+W+'px;height:auto;display:block;margin:0 auto;">'
+        +'<defs><filter id="'+fid+'"><feGaussianBlur stdDeviation="1.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>'
+        +'<filter id="'+fid+'g"><feGaussianBlur stdDeviation="3" result="g"/><feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>'
+        +'<circle cx="'+cx+'" cy="'+cy+'" r="'+(outerR+4)+'" fill="none" stroke="rgba(162,42,42,0.06)" stroke-width="1" filter="url(#'+fid+'g)"/>'
+        +'<circle cx="'+cx+'" cy="'+cy+'" r="'+outerR+'" fill="none" stroke="rgba(178,48,48,0.3)" stroke-width="0.8" filter="url(#'+fid+'g)"/>'
+        +starSVG+sigils
+        +'<circle cx="'+cx+'" cy="'+cy+'" r="'+innerR+'" fill="none" stroke="rgba(172,48,48,0.18)" stroke-width="0.5"/>'
+        +'<path d="'+gridPoly(0.33)+'" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="0.5"/>'
+        +'<path d="'+gridPoly(0.66)+'" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="0.5"/>'
+        +'<path d="'+gridPoly(1)+'" fill="none" stroke="rgba(178,48,48,0.22)" stroke-width="0.7"/>'
+        +axisLines
+        +'<circle cx="'+cx+'" cy="'+cy+'" r="4" fill="rgba(188,52,52,0.15)" filter="url(#'+fid+'g)"/>'
+        +'<circle cx="'+cx+'" cy="'+cy+'" r="2" fill="rgba(188,52,52,0.5)"/>'
+        +lustSVG
+        +'<path d="'+dataPath+'" fill="'+cFill+'" stroke="'+cStroke+'" stroke-width="1.4" filter="url(#'+fid+')"/>'
+        +dataPts.map(function(p,i){return '<circle cx="'+p.x.toFixed(1)+'" cy="'+p.y.toFixed(1)+'" r="2.5" fill="'+dotColor(axes[i])+'" opacity="0.9"/>';}).join("")
+        // Scale labels on grid rings
+        +'<text x="'+(cx+4)+'" y="'+(cy-r*0.33+3)+'" fill="rgba(255,255,255,0.15)" font-size="6" font-family="sans-serif">33</text>'
+        +'<text x="'+(cx+4)+'" y="'+(cy-r*0.66+3)+'" fill="rgba(255,255,255,0.18)" font-size="6" font-family="sans-serif">66</text>'
+        +'<text x="'+(cx+4)+'" y="'+(cy-r+3)+'" fill="rgba(255,255,255,0.22)" font-size="6" font-family="sans-serif">100</text>'
+        // Legend: color meaning — top-left corner
+        +'<text x="8" y="12" fill="rgba(92,195,112,0.45)" font-size="6" font-family="sans-serif">● pos</text>'
+        +'<text x="8" y="21" fill="rgba(215,68,68,0.45)" font-size="6" font-family="sans-serif">● neg</text>'
+        +'<text x="8" y="30" fill="rgba(148,108,198,0.45)" font-size="6" font-family="sans-serif">● 0–100</text>'
+        +'<text x="'+cx+'" y="'+(cy+r-14)+'" text-anchor="middle" dominant-baseline="middle" fill="'+phColor+'" font-size="7.5" font-family="sans-serif" letter-spacing="3" filter="url(#'+fid+'g)">'+phase+'</text>'
+        +axisLabels
+        +'</svg>';
 }
 
-// ── Horizontal metric bars ───────────────────────────────────────────────────
-function abtHorizBars(fields, showLust) {
+// ── Compact vertical metric bars ────────────────────────────────────────────
+function abtVertBars(fields, showLust) {
     function pm(val){
         if(!val)return{value:0,delta:0};
-        const n=String(val).match(/-?\d+/),d=String(val).match(/delta:\s*([+-]?\d+)/i);
+        var n=String(val).match(/-?\d+/),d=String(val).match(/delta:\s*([+-]?\d+)/i);
         return{value:n?Math.max(-100,Math.min(100,parseInt(n[0]))):0,delta:d?parseInt(d[1]):0};
     }
 
-    const cAff=pm(fields.char_affection||fields.affection);
-    const cFear=pm(fields.char_fear||fields.fear);
-    const cObs=pm(fields.char_obsession||fields.obsession);
-    const cTru=pm(fields.char_trust||fields.trust);
-    const cLust=showLust?pm(fields.char_lust||fields.lust):null;
+    var cAff=pm(fields.char_affection||fields.affection);
+    var cFear=pm(fields.char_fear||fields.fear);
+    var cObs=pm(fields.char_obsession||fields.obsession);
+    var cTru=pm(fields.char_trust||fields.trust);
+    var cLust=showLust?pm(fields.char_lust||fields.lust):null;
 
-    const rows=[
-        {icon:"♡",label:"Affection", bidir:true,  c:cAff},
-        {icon:"△",label:"Fear",      bidir:true,  c:cFear},
-        {icon:"⛧",label:"Obsession", bidir:false, c:cObs},
-        {icon:"◈",label:"Trust",     bidir:true,  c:cTru},
+    var cols=[
+        {sigil:"♡", label:"AFF",  bidir:true,  c:cAff},
+        {sigil:"◬", label:"FEAR", bidir:true,  c:cFear},
+        {sigil:"☉", label:"OBS",  bidir:false, c:cObs},
+        {sigil:"◈", label:"TRST", bidir:true,  c:cTru},
     ];
-    if(cLust) rows.push({icon:"𖤐",label:"Lust",bidir:false,c:cLust});
+    if(cLust) cols.push({sigil:"☾",label:"LUST",bidir:false,c:cLust});
 
     function barColor(v,bidir){
         if(!bidir)return v>60?"#b060d8":v>30?"#8040a0":"#503070";
-        if(v<-60)return"#c03030";
-        if(v<-20)return"#a04444";
-        if(v>60)return"#3a9a6a";
-        if(v>20)return"#4a7a5a";
+        if(v<-60)return"#c03030";if(v<-20)return"#a04444";
+        if(v>60)return"#3a9a6a";if(v>20)return"#4a7a5a";
         return"#555566";
     }
 
-    const rowsHtml = rows.map(row=>{
-        const v=row.c.value, d=row.c.delta;
-        const col=barColor(v,row.bidir);
-        const dStr=d!==0?(d>0?`+${d}`:`${d}`):"";
-        const dColor=d>0?"rgba(92,185,102,0.85)":d<0?"rgba(185,78,78,0.85)":"transparent";
-        const sign=row.bidir&&v>0?"+":"";
+    var barH=48;
+    var colsHtml=cols.map(function(col){
+        var v=col.c.value, d=col.c.delta;
+        var color=barColor(v,col.bidir);
+        var dStr=d!==0?(d>0?"+"+d:""+d):"";
+        var dColor=d>0?"rgba(92,185,102,0.9)":d<0?"rgba(185,78,78,0.9)":"transparent";
+        var sign=col.bidir&&v>0?"+":"";
 
-        let barHtml="";
-        if(row.bidir){
-            const pct=Math.abs(v)/100*50;
-            const isNeg=v<0;
-            barHtml=`<div style="position:relative;height:4px;background:rgba(255,255,255,0.07);border-radius:2px;flex:1;">
-                <div style="position:absolute;top:0;bottom:0;left:50%;width:1px;background:rgba(255,255,255,0.12);"></div>
-                ${isNeg
-                    ?`<div style="position:absolute;top:0;bottom:0;right:50%;width:${pct.toFixed(1)}%;background:${col};border-radius:2px 0 0 2px;max-width:50%;"></div>`
-                    :`<div style="position:absolute;top:0;bottom:0;left:50%;width:${pct.toFixed(1)}%;background:${col};border-radius:0 2px 2px 0;max-width:50%;"></div>`
-                }
-            </div>`;
+        var fillStyle="";
+        if(col.bidir){
+            var pct=Math.abs(v)/100*50;
+            if(v>=0){
+                fillStyle="bottom:50%;height:"+pct.toFixed(1)+"%;max-height:50%;";
+            } else {
+                fillStyle="top:50%;height:"+pct.toFixed(1)+"%;max-height:50%;";
+            }
         } else {
-            const pct=Math.max(2,v);
-            barHtml=`<div style="position:relative;height:4px;background:rgba(255,255,255,0.07);border-radius:2px;flex:1;">
-                <div style="position:absolute;top:0;bottom:0;left:0;width:${pct}%;background:${col};border-radius:2px;"></div>
-            </div>`;
+            var pct2=Math.max(2,v);
+            fillStyle="bottom:0;height:"+pct2+"%;";
         }
 
-        return `<div style="display:flex;align-items:center;gap:8px;margin:5px 0;">
-            <div style="display:flex;align-items:center;gap:5px;width:80px;flex-shrink:0;">
-                <span style="font-size:0.82em;color:rgba(212,168,182,0.65);">${row.icon}</span>
-                <span style="font-size:0.7em;letter-spacing:1px;text-transform:uppercase;color:rgba(218,178,192,0.72);font-family:sans-serif;">${row.label}</span>
-            </div>
-            <span style="font-size:0.88em;font-family:monospace;font-weight:700;color:${col};min-width:34px;text-align:right;">${sign}${v}</span>
-            ${dStr?`<span style="font-size:0.72em;color:${dColor};min-width:26px;">${dStr}</span>`:`<span style="min-width:26px;"></span>`}
-            ${barHtml}
-        </div>`;
+        var midLine=col.bidir?'<div style="position:absolute;left:0;right:0;top:50%;height:1px;background:rgba(255,255,255,0.12);"></div>':"";
+
+        return '<div style="display:flex;flex-direction:column;align-items:center;gap:3px;flex:1;min-width:0;">'
+            +'<span style="font-size:0.82em;font-family:monospace;font-weight:700;color:'+color+';line-height:1;">'+sign+v+'</span>'
+            +(dStr?'<span style="font-size:0.6em;color:'+dColor+';line-height:1;">'+dStr+'</span>':'<span style="font-size:0.6em;line-height:1;opacity:0;">&nbsp;</span>')
+            +'<div style="position:relative;width:6px;height:'+barH+'px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;">'
+            +midLine
+            +'<div style="position:absolute;left:0;right:0;'+fillStyle+'background:'+color+';border-radius:3px;"></div>'
+            +'</div>'
+            +'<span style="font-size:0.78em;color:rgba(212,168,182,0.55);">'+col.sigil+'</span>'
+            +'<span style="font-size:0.52em;letter-spacing:1px;text-transform:uppercase;color:rgba(218,178,192,0.45);font-family:sans-serif;">'+col.label+'</span>'
+            +'</div>';
     }).join("");
 
-    return `<div style="padding:6px 16px 10px;">
-        ${rowsHtml}
-    </div>`;
+    return '<div style="display:flex;justify-content:center;gap:14px;padding:4px 24px 8px;max-width:100%;box-sizing:border-box;flex-wrap:wrap;">'+colsHtml+'</div>';
 }
 
 // ── Characters block ──────────────────────────────────────────────────────────
 function abtRenderChars(charsVal) {
     const chars = parseChars(charsVal);
     if (!chars.length) return "";
-    return `<div style="padding:8px 14px 12px;border-top:0.5px solid rgba(255,255,255,0.05);">
-        <div style="font-size:0.58em;letter-spacing:3px;text-transform:uppercase;color:rgba(210,165,180,0.7);font-family:sans-serif;margin-bottom:8px;">▸ present</div>
-        ${chars.map(c => `<div style="margin-bottom:7px;padding:7px 10px;background:rgba(255,255,255,0.025);border-left:1px solid rgba(180,50,50,0.3);border-radius:0 3px 3px 0;">
-            <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px;">
-                <span style="font-size:0.8em;font-weight:600;color:rgba(240,210,218,0.97);">${abtEsc(c.name||"")}</span>
-                <span style="font-size:0.68em;color:rgba(205,170,178,0.88);font-style:italic;">${abtEsc(c.mood||"")}</span>
-            </div>
-            ${c.attire ? `<div style="font-size:0.7em;color:rgba(190,158,166,0.82);margin-bottom:3px;">${abtEsc(c.attire)}</div>` : ""}
-            ${c.thought ? `<div style="font-size:0.72em;color:rgba(225,185,195,0.92);font-style:italic;border-top:0.5px solid rgba(255,255,255,0.05);padding-top:4px;line-height:1.55;">"${abtEsc(c.thought)}"</div>` : ""}
-        </div>`).join("")}
-    </div>`;
+    const cs = abtScheme();
+    return '<div style="padding:8px 14px 12px;border-top:0.5px solid rgba(255,255,255,0.05);">'
+        +'<div style="font-size:0.58em;letter-spacing:3px;text-transform:uppercase;color:'+cs.textDim+';font-family:sans-serif;margin-bottom:8px;">▸ present</div>'
+        +chars.map(function(c){return '<div style="margin-bottom:7px;padding:7px 10px;background:rgba(255,255,255,0.025);border-left:1px solid '+cs.charBorder+';border-radius:0 3px 3px 0;">'
+            +'<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px;">'
+            +'<span style="font-size:0.8em;font-weight:600;color:'+cs.text+';">'+abtEsc(c.name||"")+'</span>'
+            +'<span style="font-size:0.68em;color:'+cs.text+';opacity:0.8;font-style:italic;">'+abtEsc(c.mood||"")+'</span>'
+            +'</div>'
+            +(c.attire ? '<div style="font-size:0.7em;color:'+cs.text+';opacity:0.75;margin-bottom:3px;">'+abtEsc(c.attire)+'</div>' : "")
+            +(c.thought ? '<div style="font-size:0.72em;color:'+cs.text+';font-style:italic;border-top:0.5px solid rgba(255,255,255,0.05);padding-top:4px;line-height:1.55;">"'+abtEsc(c.thought)+'"</div>' : "")
+            +'</div>';}).join("")
+        +'</div>';
 }
 
 // ── Full card renderer ────────────────────────────────────────────────────────
@@ -439,6 +536,7 @@ function abtRenderCard(fields, s) {
     if (!s) s = abtLoad();
     if (!s.ibShow) return '<div class="abt-block" style="display:none"></div>';
 
+    const cs = abtScheme();
     const phase    = (fields.phase||"NOTHING").toUpperCase().replace(/[^A-Z]/g,"");
     const pCfg     = PHASE_CFG[phase] || PHASE_CFG["NOTHING"];
     const intensity = (fields.intensity||"").toLowerCase().trim();
@@ -450,58 +548,58 @@ function abtRenderCard(fields, s) {
     const dignity  = fields.dignity  && !/^none/i.test(fields.dignity)  ? fields.dignity  : null;
     const location = fields.location || null;
     const weather  = fields.weather  || null;
+    const date     = fields.date     || null;
     const bundles  = fields.bundles  && !/^none/i.test(fields.bundles)  ? fields.bundles  : null;
 
-    return `<div class="abt-block" style="margin:14px 0;background:linear-gradient(160deg,rgba(8,5,7,0.99) 0%,rgba(13,8,11,0.97) 100%);border:0.5px solid rgba(150,45,45,0.18);border-top:1px solid ${pCfg.color}55;border-radius:6px;box-shadow:0 6px 28px rgba(0,0,0,0.65);overflow:hidden;font-family:inherit;">
+    return '<div class="abt-block" style="margin:14px 0;background:'+cs.bg+';border:0.5px solid '+cs.border+';border-top:1px solid '+pCfg.color+'55;border-radius:6px;box-shadow:0 6px 28px rgba(0,0,0,0.65);overflow:hidden;font-family:inherit;max-width:100%;box-sizing:border-box;display:block !important;visibility:visible !important;opacity:1 !important;">'
 
-        <!-- Header -->
-        <div style="padding:9px 14px 9px;background:rgba(0,0,0,0.38);border-bottom:0.5px solid rgba(150,45,45,0.12);position:relative;overflow:hidden;">
-            <div style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:2.8em;opacity:0.06;color:${pCfg.color};line-height:1;pointer-events:none;">${pCfg.sigil}</div>
-            <!-- Intensity + condition chips — most important at top -->
-            <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:7px;">
-                ${intensity ? `<span style="font-size:0.62em;letter-spacing:2px;text-transform:uppercase;padding:3px 9px;border:0.5px solid ${iColor}88;border-radius:10px;color:${iColor};font-family:sans-serif;font-weight:600;">${abtEsc(fields.intensity)}</span>` : ""}
-                <span style="font-size:0.62em;letter-spacing:2px;text-transform:uppercase;padding:3px 9px;border:0.5px solid ${cColor}88;border-radius:10px;color:${cColor};font-family:sans-serif;font-weight:600;">${abtEsc(condition)}</span>
-            </div>
-            <!-- Phase badge + subtitle -->
-            <div style="display:flex;align-items:baseline;gap:8px;">
-                <span style="font-size:0.62em;letter-spacing:4px;text-transform:uppercase;padding:2px 8px;border:0.5px solid ${pCfg.color}55;border-radius:3px;color:${pCfg.color};font-family:sans-serif;text-shadow:0 0 10px ${pCfg.glow};">${phase}</span>
-                <span style="font-size:0.68em;color:rgba(222,188,200,0.78);font-style:italic;">${pCfg.sub}</span>
-            </div>
-        </div>
+        // Header with phase label
+        +'<div style="padding:9px 14px 9px;background:'+cs.headerBg+';border-bottom:0.5px solid rgba('+cs.accent+',0.12);position:relative;overflow:hidden;">'
+            +'<div style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:2.8em;opacity:0.06;color:'+pCfg.color+';line-height:1;pointer-events:none;">'+pCfg.sigil+'</div>'
+            +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:7px;align-items:center;">'
+                +(intensity ? '<div style="display:flex;align-items:center;gap:4px;"><span style="font-size:0.48em;letter-spacing:1.5px;text-transform:uppercase;color:'+cs.textDim+';font-family:sans-serif;">depth</span><span style="font-size:0.62em;letter-spacing:2px;text-transform:uppercase;padding:3px 9px;border:0.5px solid '+iColor+'88;border-radius:10px;color:'+iColor+';font-family:sans-serif;font-weight:600;">'+abtEsc(fields.intensity)+'</span></div>' : "")
+                +'<div style="display:flex;align-items:center;gap:4px;"><span style="font-size:0.48em;letter-spacing:1.5px;text-transform:uppercase;color:'+cs.textDim+';font-family:sans-serif;">condition</span><span style="font-size:0.62em;letter-spacing:2px;text-transform:uppercase;padding:3px 9px;border:0.5px solid '+cColor+'88;border-radius:10px;color:'+cColor+';font-family:sans-serif;font-weight:600;">'+abtEsc(condition)+'</span></div>'
+            +'</div>'
+            +'<div style="display:flex;align-items:baseline;gap:8px;">'
+                +'<span style="font-size:0.5em;letter-spacing:1.5px;text-transform:uppercase;color:'+cs.textDim+';font-family:sans-serif;">phase</span>'
+                +'<span style="font-size:0.62em;letter-spacing:4px;text-transform:uppercase;padding:2px 8px;border:0.5px solid '+pCfg.color+'55;border-radius:3px;color:'+pCfg.color+';font-family:sans-serif;text-shadow:0 0 10px '+pCfg.glow+';">'+phase+'</span>'
+                +'<span style="font-size:0.68em;color:'+cs.text+';font-style:italic;opacity:0.85;">'+pCfg.sub+'</span>'
+            +'</div>'
+        +'</div>'
 
-        <!-- World state -->
-        ${s.ibWorld && (location||weather) ? `<div style="padding:5px 14px;border-bottom:0.5px solid rgba(255,255,255,0.04);display:flex;gap:12px;flex-wrap:wrap;">
-            ${location ? `<span style="font-size:0.71em;color:rgba(215,185,195,0.9);font-style:italic;">📍 ${abtEsc(location)}</span>` : ""}
-            ${weather  ? `<span style="font-size:0.71em;color:rgba(210,180,190,0.82);font-style:italic;">☁ ${abtEsc(weather)}</span>` : ""}
-        </div>` : ""}
+        // World state
+        +(s.ibWorld && (date||location||weather) ? '<div style="padding:5px 14px;border-bottom:0.5px solid rgba(255,255,255,0.04);display:flex;gap:12px;flex-wrap:wrap;">'
+            +(date     ? '<span style="font-size:0.71em;color:'+cs.text+';font-style:italic;">☽ '+abtEsc(date)+'</span>' : "")
+            +(location ? '<span style="font-size:0.71em;color:'+cs.text+';font-style:italic;opacity:0.9;">📍 '+abtEsc(location)+'</span>' : "")
+            +(weather  ? '<span style="font-size:0.71em;color:'+cs.text+';font-style:italic;opacity:0.82;">☁ '+abtEsc(weather)+'</span>' : "")
+            +'</div>' : "")
 
-        <!-- Chart full-width, then horizontal bars below -->
-        ${s.ibChart ? `<div style="padding:6px 0 0;">${abtRenderChart(fields, s.ibLust)}</div>` : ""}
-        ${abtHorizBars(fields, s.ibLust)}
+        // Chart + vertical bars
+        +(s.ibChart ? '<div style="padding:4px 0 0;max-width:100%;overflow:hidden;">'+abtRenderChart(fields, s.ibLust)+'</div>' : "")
+        +abtVertBars(fields, s.ibLust)
 
-        <!-- Injuries + Dignity -->
-        ${s.ibInjuries && (injuries||dignity) ? `<div style="padding:0 14px 10px;border-top:0.5px solid rgba(255,255,255,0.04);margin-top:2px;">
-            ${injuries ? `<div style="margin-top:7px;font-size:0.73em;color:rgba(225,135,110,0.95);font-style:italic;">⚔ ${abtEsc(injuries)}</div>` : ""}
-            ${dignity  ? `<div style="margin-top:3px;font-size:0.71em;color:rgba(195,165,178,0.9);font-style:italic;">◈ ${abtEsc(dignity)}</div>`  : ""}
-        </div>` : ""}
+        // Injuries + Dignity
+        +(s.ibInjuries && (injuries||dignity) ? '<div style="padding:0 14px 10px;border-top:0.5px solid rgba(255,255,255,0.04);margin-top:2px;">'
+            +(injuries ? '<div style="margin-top:7px;font-size:0.73em;color:rgba(225,135,110,0.95);font-style:italic;">⚔ '+abtEsc(injuries)+'</div>' : "")
+            +(dignity  ? '<div style="margin-top:3px;font-size:0.71em;color:'+cs.text+';font-style:italic;opacity:0.9;">◈ '+abtEsc(dignity)+'</div>'  : "")
+            +'</div>' : "")
 
-        <!-- Active bundles -->
-        ${s.ibBundles && bundles ? `<div style="padding:0 14px 9px;">
-            <span style="font-size:0.6em;letter-spacing:2px;text-transform:uppercase;color:rgba(200,160,175,0.65);font-family:sans-serif;">bundles · </span>
-            <span style="font-size:0.7em;color:rgba(205,160,175,0.85);font-style:italic;">${abtEsc(bundles)}</span>
-        </div>` : ""}
+        // Bundles
+        +(s.ibBundles && s.evtEnabled && bundles ? '<div style="padding:0 14px 9px;">'
+            +'<span style="font-size:0.6em;letter-spacing:2px;text-transform:uppercase;color:'+cs.textDim+';font-family:sans-serif;">bundles · </span>'
+            +'<span style="font-size:0.7em;color:'+cs.text+';font-style:italic;opacity:0.85;">'+abtEsc(bundles)+'</span>'
+            +'</div>' : "")
 
-        <!-- Characters -->
-        ${s.ibChars && fields.characters ? abtRenderChars(fields.characters) : ""}
+        // Characters
+        +(s.ibChars && fields.characters ? abtRenderChars(fields.characters) : "")
 
-        <!-- Footer -->
-        <div style="padding:3px 14px 4px;border-top:0.5px solid rgba(255,255,255,0.025);display:flex;justify-content:space-between;">
-            <span style="font-size:0.52em;color:rgba(180,50,50,0.35);">⛧ · 𖤐 · ⛧</span>
-            <span style="font-size:0.52em;color:rgba(200,155,170,0.3);letter-spacing:2px;">Λ𝔅Λ𝕋𝕋𝕆ℝ</span>
-        </div>
-    </div>`;
+        // Footer
+        +'<div style="padding:3px 14px 4px;border-top:0.5px solid rgba(255,255,255,0.025);display:flex;justify-content:space-between;">'
+            +'<span style="font-size:0.52em;color:'+cs.footer+';">⛧ · 𖤐 · ⛧</span>'
+            +'<span style="font-size:0.52em;color:rgba('+cs.accent+',0.3);letter-spacing:2px;">'+cs.footerText+'</span>'
+        +'</div>'
+    +'</div>';
 }
-
 // ── Core ──────────────────────────────────────────────────────────────────────
 function abtInject() {
     try {
@@ -522,13 +620,98 @@ function abtProcess(msgDiv, msgIndex) {
         const mesTextEl = msgDiv.querySelector(".mes_text");
         if (!mesTextEl) return;
         mesTextEl.querySelectorAll(".abt-block").forEach(el => el.remove());
-        mesTextEl.innerHTML = mesTextEl.innerHTML
-            .replace(/&lt;infoblock&gt;[\s\S]*?&lt;\/infoblock&gt;/gi, "")
-            .replace(/<infoblock>[\s\S]*?<\/infoblock>/gi, "")
-            .replace(/&lt;notes&gt;[\s\S]*?&lt;\/notes&gt;/gi, "")
-            .replace(/<notes>[\s\S]*?<\/notes>/gi, "")
-            .replace(/(?:<br\s*\/?>\s*){3,}/gi, "<br><br>")
-            .replace(/<p>\s*<\/p>/gi, "");
+        mesTextEl.querySelectorAll(".abt-notes-split").forEach(el => el.remove());
+        
+        // Strip <infoblock>
+        var html = mesTextEl.innerHTML;
+        html = html.replace(/&lt;infoblock&gt;[\s\S]*?&lt;\/infoblock&gt;/gi, "");
+        html = html.replace(/<infoblock>[\s\S]*?<\/infoblock>/gi, "");
+        html = html.replace(/(?:<br\s*\/?>\s*){3,}/gi, "<br><br>");
+        html = html.replace(/<p>\s*<\/p>/gi, "");
+        mesTextEl.innerHTML = html;
+        
+        // DOM-level: extract notes from blockquotes.
+        // Find blockquotes that contain notes content and split them.
+        mesTextEl.querySelectorAll("blockquote").forEach(function(bq) {
+            var bqHtml = bq.innerHTML;
+            
+            // Find the notes start — look for the ꒰ᐢ marker followed by ⛧ 
+            // that precedes the Date: field. This is distinct from the OOC marker.
+            // The OOC content is: ꒰ᐢ. .ᐢ꒱ [text] ⛧
+            // The notes marker is: ꒰ᐢ. .ᐢ꒱⛧ then Date: on next line
+            
+            // Strategy: find the LAST occurrence of ꒰ᐢ in the blockquote —
+            // the first is the LILITH header, the second is the OOC body start,
+            // the last is the notes marker.
+            var lastMarkerIdx = -1;
+            var searchFrom = 0;
+            while (true) {
+                var idx = bqHtml.indexOf("\u26E7", searchFrom); // ⛧ after ꒱
+                if (idx === -1) break;
+                // Check if this ⛧ is followed (within ~50 chars) by Date: or <b>Date:
+                var after = bqHtml.substring(idx, idx + 80);
+                if (/Date:/i.test(after)) {
+                    // Walk back to find the ꒰ᐢ before this
+                    var walkBack = bqHtml.lastIndexOf("꒰ᐢ", idx);
+                    if (walkBack !== -1 && idx - walkBack < 30) {
+                        lastMarkerIdx = walkBack;
+                    } else {
+                        lastMarkerIdx = idx; // use ⛧ position directly
+                    }
+                    break;
+                }
+                searchFrom = idx + 1;
+            }
+            
+            // Fallback: just find <b>Date:</b> or bold Date:
+            if (lastMarkerIdx === -1) {
+                var datePatterns = [
+                    /<b>Date:<\/b>/i,
+                    /Date:\s*\d{1,2}\.\d{1,2}\.\d{4}/i,
+                    /<b>꒰ᐢ[^<]*⛧<\/b>/i
+                ];
+                for (var dp of datePatterns) {
+                    var dm = bqHtml.match(dp);
+                    if (dm) {
+                        lastMarkerIdx = bqHtml.indexOf(dm[0]);
+                        // Walk back to catch ꒰ᐢ marker if on previous line
+                        var lookBack = bqHtml.lastIndexOf("꒰ᐢ", lastMarkerIdx);
+                        if (lookBack !== -1 && lastMarkerIdx - lookBack < 100) {
+                            lastMarkerIdx = lookBack;
+                        }
+                        // Walk back further to catch any <br> before the marker
+                        while (lastMarkerIdx > 0 && /[\s]/.test(bqHtml[lastMarkerIdx-1])) lastMarkerIdx--;
+                        var brBefore = bqHtml.lastIndexOf("<br", lastMarkerIdx);
+                        if (brBefore !== -1 && lastMarkerIdx - brBefore < 10) {
+                            lastMarkerIdx = brBefore;
+                        }
+                        break;
+                    }
+                }
+            }
+            
+            if (lastMarkerIdx === -1) return;
+            
+            // Split the blockquote
+            var oocPart = bqHtml.substring(0, lastMarkerIdx).replace(/(<br\s*\/?>|\s)+$/gi, "");
+            var notesPart = bqHtml.substring(lastMarkerIdx);
+            
+            // Keep OOC in blockquote
+            bq.innerHTML = oocPart;
+            
+            // Create collapsible notes after blockquote
+            var notesDiv = document.createElement("div");
+            notesDiv.className = "abt-notes-split";
+            notesDiv.style.cssText = "margin:6px 0;";
+            notesDiv.innerHTML = '<details style="background:rgba(255,255,255,0.015);border:0.5px solid rgba(150,45,45,0.12);border-radius:4px;">'
+                +'<summary style="padding:4px 12px;cursor:pointer;font-size:0.58em;letter-spacing:2px;text-transform:uppercase;color:rgba(210,165,180,0.5);font-family:sans-serif;user-select:none;">'
+                +'꒰ᐢ. .ᐢ꒱⛧ narration notes</summary>'
+                +'<div style="padding:4px 12px 8px;font-size:0.82em;color:rgba(210,185,195,0.82);line-height:1.6;">'+notesPart+'</div>'
+                +'</details>';
+            bq.parentNode.insertBefore(notesDiv, bq.nextSibling);
+        });
+
+        // Append the infoblock card
         const wrap = document.createElement("div");
         wrap.innerHTML = abtRenderCard(fields, s);
         const card = wrap.firstElementChild;
@@ -545,128 +728,147 @@ function abtReprocessAll() {
 
 // ── Settings HTML ─────────────────────────────────────────────────────────────
 const ABT_HTML = `
-<div id="abt-panel" class="abattoir-panel">
-  <div class="abattoir-header">
-    <span class="abattoir-title">꒰ᐢ. .ᐢ꒱ Abattoir</span>
-    <label class="abattoir-toggle">
-      <input type="checkbox" id="abt-enabled">
-      <span class="abattoir-slider"></span>
-    </label>
-  </div>
-  <div id="abt-body">
-    <details class="abattoir-section" open>
-      <summary class="abattoir-section-title">
-        Random Bad Events
-        <label class="abattoir-inline-toggle">
-          <input type="checkbox" id="abt-evt-on">
-          <span class="abattoir-slider abattoir-slider-sm"></span>
-        </label>
-      </summary>
-      <div id="abt-evt-opts" class="abattoir-section-body">
-        <div class="abattoir-row">
-          <label class="abattoir-label">Frequency</label>
-          <select id="abt-evt-freq" class="abattoir-select">
-            <option value="rare">Rare</option>
-            <option value="occasional">Occasional</option>
-            <option value="frequent">Frequent</option>
-          </select>
-        </div>
-        <div class="abattoir-sub-label">Event Types</div>
-        <div class="abattoir-checkbox-grid">
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-et-physicalHarm"><span>Physical Harm</span></label>
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-et-death"><span>Death</span></label>
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-et-bodyHorror"><span>Body Horror</span></label>
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-et-environmental"><span>Environmental</span></label>
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-et-social"><span>Social / Political</span></label>
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-et-disease"><span>Disease / Illness</span></label>
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-et-betrayal"><span>Betrayal</span></label>
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-et-propertyDamage"><span>Property Damage</span></label>
-        </div>
-      </div>
-    </details>
+<div id="abt-panel">
+  <div class="inline-drawer">
+    <div class="inline-drawer-toggle inline-drawer-header">
+      <b>꒰ᐢ. .ᐢ꒱⛧ Abattoir</b>
+      <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+    </div>
+    <div class="inline-drawer-content" style="padding-left:8px;border-left:1px solid rgba(150,45,45,0.15);">
 
-    <details class="abattoir-section">
-      <summary class="abattoir-section-title">Infoblock</summary>
-      <div class="abattoir-section-body">
-        <div class="abattoir-row">
-          <label class="abattoir-label">Show Card</label>
-          <select id="abt-ib-show" class="abattoir-select">
-            <option value="on">On</option>
-            <option value="off">Off</option>
-          </select>
+      <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+          <b>Random Bad Events</b>
+          <label class="checkbox_label" style="margin-left:auto;margin-right:8px;" title="Toggle random events">
+            <input type="checkbox" id="abt-evt-on">
+          </label>
+          <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
-        <div class="abattoir-row">
-          <label class="abattoir-label">Ritual Chart</label>
-          <select id="abt-ib-chart" class="abattoir-select">
-            <option value="on">Show</option>
-            <option value="off">Hide</option>
-          </select>
-        </div>
-        <div class="abattoir-row">
-          <label class="abattoir-label">Lust Metric</label>
-          <select id="abt-ib-lust" class="abattoir-select">
-            <option value="on">Show</option>
-            <option value="off">Hide</option>
-          </select>
-        </div>
-        <div class="abattoir-row">
-          <label class="abattoir-label">World State</label>
-          <select id="abt-ib-world" class="abattoir-select">
-            <option value="on">Show</option>
-            <option value="off">Hide</option>
-          </select>
-        </div>
-        <div class="abattoir-row">
-          <label class="abattoir-label">Characters</label>
-          <select id="abt-ib-chars" class="abattoir-select">
-            <option value="on">Show thoughts + attire</option>
-            <option value="off">Hide</option>
-          </select>
-        </div>
-        <div class="abattoir-row">
-          <label class="abattoir-label">Injuries</label>
-          <select id="abt-ib-injuries" class="abattoir-select">
-            <option value="on">Show</option>
-            <option value="off">Hide</option>
-          </select>
-        </div>
-        <div class="abattoir-row">
-          <label class="abattoir-label">Bundles</label>
-          <select id="abt-ib-bundles" class="abattoir-select">
-            <option value="on">Show</option>
-            <option value="off">Hide</option>
-          </select>
+        <div class="inline-drawer-content" id="abt-evt-opts">
+          <div class="flex-container">
+            <span>Frequency</span>
+            <select id="abt-evt-freq" class="text_pole widthNatural">
+              <option value="rare">Rare</option>
+              <option value="occasional">Occasional</option>
+              <option value="frequent">Frequent</option>
+            </select>
+          </div>
+          <hr>
+          <small>Event Types</small>
+          <div class="flex-container flexFlowColumn">
+            <label class="checkbox_label"><input type="checkbox" id="abt-et-physicalHarm"><span>Physical Harm</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="abt-et-death"><span>Death</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="abt-et-bodyHorror"><span>Body Horror</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="abt-et-environmental"><span>Environmental</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="abt-et-social"><span>Social / Political</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="abt-et-disease"><span>Disease / Illness</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="abt-et-betrayal"><span>Betrayal</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="abt-et-propertyDamage"><span>Property Damage</span></label>
+          </div>
         </div>
       </div>
-    </details>
 
-    <details class="abattoir-section">
-      <summary class="abattoir-section-title">Content Preferences</summary>
-      <div class="abattoir-section-body">
-        <div class="abattoir-row">
-          <label class="abattoir-label">Violence</label>
-          <select id="abt-violence" class="abattoir-select">
-            <option value="mild">Mild</option>
-            <option value="moderate">Moderate</option>
-            <option value="graphic">Graphic</option>
-            <option value="extreme">Extreme</option>
-          </select>
+      <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+          <b>Infoblock</b>
+          <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
-        <div class="abattoir-sub-label">Dark Themes</div>
-        <div class="abattoir-checkbox-grid">
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-c-psychologicalHorror"><span>Psych. Horror</span></label>
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-c-torture"><span>Torture</span></label>
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-c-suffering"><span>Suffering</span></label>
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-c-dominanceSubmission"><span>Dom / Sub</span></label>
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-c-captivity"><span>Captivity</span></label>
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-c-controlManipulation"><span>Control &amp; Manip.</span></label>
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-c-romance"><span>Romance</span></label>
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-c-explicitSexual"><span>Explicit Sexual</span></label>
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-c-monsterRomance"><span>Monster Romance</span></label>
-          <label class="abattoir-check-label"><input type="checkbox" id="abt-c-nonhumanEntities"><span>Non-human Entities</span></label>
+        <div class="inline-drawer-content">
+          <div class="flex-container">
+            <span>Color Scheme</span>
+            <select id="abt-ib-scheme" class="text_pole widthNatural">
+              <option value="blood">Blood Ritual</option>
+              <option value="void">Void</option>
+              <option value="bone">Bone & Ash</option>
+              <option value="frost">Frost</option>
+              <option value="moss">Moss & Decay</option>
+            </select>
+          </div>
+          <div class="flex-container">
+            <span>Show Card</span>
+            <select id="abt-ib-show" class="text_pole widthNatural">
+              <option value="on">On</option>
+              <option value="off">Off</option>
+            </select>
+          </div>
+          <div class="flex-container">
+            <span>Ritual Chart</span>
+            <select id="abt-ib-chart" class="text_pole widthNatural">
+              <option value="on">Show</option>
+              <option value="off">Hide</option>
+            </select>
+          </div>
+          <div class="flex-container">
+            <span>Lust Metric</span>
+            <select id="abt-ib-lust" class="text_pole widthNatural">
+              <option value="on">Show</option>
+              <option value="off">Hide</option>
+            </select>
+          </div>
+          <div class="flex-container">
+            <span>World State</span>
+            <select id="abt-ib-world" class="text_pole widthNatural">
+              <option value="on">Show</option>
+              <option value="off">Hide</option>
+            </select>
+          </div>
+          <div class="flex-container">
+            <span>Characters</span>
+            <select id="abt-ib-chars" class="text_pole widthNatural">
+              <option value="on">Show thoughts + attire</option>
+              <option value="off">Hide</option>
+            </select>
+          </div>
+          <div class="flex-container">
+            <span>Injuries</span>
+            <select id="abt-ib-injuries" class="text_pole widthNatural">
+              <option value="on">Show</option>
+              <option value="off">Hide</option>
+            </select>
+          </div>
+          <div class="flex-container">
+            <span>Bundles</span>
+            <select id="abt-ib-bundles" class="text_pole widthNatural">
+              <option value="on">Show</option>
+              <option value="off">Hide</option>
+            </select>
+          </div>
         </div>
       </div>
-    </details>
+
+      <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+          <b>Content Preferences</b>
+          <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+          <div class="flex-container">
+            <span>Violence</span>
+            <select id="abt-violence" class="text_pole widthNatural">
+              <option value="mild">Mild</option>
+              <option value="moderate">Moderate</option>
+              <option value="graphic">Graphic</option>
+              <option value="extreme">Extreme</option>
+            </select>
+          </div>
+          <hr>
+          <small>Dark Themes</small>
+          <div class="flex-container flexFlowColumn">
+            <label class="checkbox_label"><input type="checkbox" id="abt-c-psychologicalHorror"><span>Psych. Horror</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="abt-c-torture"><span>Torture</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="abt-c-suffering"><span>Suffering</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="abt-c-dominanceSubmission"><span>Dom / Sub</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="abt-c-captivity"><span>Captivity</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="abt-c-controlManipulation"><span>Control &amp; Manip.</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="abt-c-romance"><span>Romance</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="abt-c-explicitSexual"><span>Explicit Sexual</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="abt-c-monsterRomance"><span>Monster Romance</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="abt-c-nonhumanEntities"><span>Non-human Entities</span></label>
+          </div>
+        </div>
+      </div>
+
+    </div>
   </div>
 </div>`;
 
@@ -676,11 +878,11 @@ jQuery(async () => {
     $("#extensions_settings").append(ABT_HTML);
 
     const s = abtLoad();
-    $("#abt-enabled").prop("checked", s.enabled);
-    $("#abt-body").toggleClass("abattoir-disabled", !s.enabled);
+    s.enabled = true; // Extension on/off handled by SillyTavern's extension manager
+    abtSave(s);
     $("#abt-evt-on").prop("checked", s.evtEnabled);
-    $("#abt-evt-opts").toggleClass("abattoir-hidden", !s.evtEnabled);
     $("#abt-evt-freq").val(s.evtFreq);
+    $("#abt-ib-scheme").val(localStorage.getItem("ABT_scheme") || "blood");
     for (const k of Object.keys(s.evtTypes)) $(`#abt-et-${k}`).prop("checked", s.evtTypes[k]);
     $("#abt-ib-show").val(s.ibShow     ? "on" : "off");
     $("#abt-ib-chart").val(s.ibChart   ? "on" : "off");
@@ -694,9 +896,10 @@ jQuery(async () => {
 
     $("#abt-panel").on("change", "input, select", function() {
         const cur = abtLoad();
-        cur.enabled       = $("#abt-enabled").is(":checked");
+        cur.enabled       = true;
         cur.evtEnabled    = $("#abt-evt-on").is(":checked");
         cur.evtFreq       = $("#abt-evt-freq").val();
+        localStorage.setItem("ABT_scheme", $("#abt-ib-scheme").val());
         cur.ibShow        = $("#abt-ib-show").val()     === "on";
         cur.ibChart       = $("#abt-ib-chart").val()    === "on";
         cur.ibLust        = $("#abt-ib-lust").val()     === "on";
@@ -708,17 +911,16 @@ jQuery(async () => {
         for (const k of Object.keys(cur.evtTypes)) cur.evtTypes[k] = $(`#abt-et-${k}`).is(":checked");
         for (const k of Object.keys(cur.content))  cur.content[k]  = $(`#abt-c-${k}`).is(":checked");
         abtSave(cur);
-        $("#abt-body").toggleClass("abattoir-disabled", !cur.enabled);
-        $("#abt-evt-opts").toggleClass("abattoir-hidden", !cur.evtEnabled);
         abtInject();
         abtReprocessAll();
     });
 
     if (ctx.eventTypes?.GENERATION_STARTED)  ctx.eventSource.on(ctx.eventTypes.GENERATION_STARTED, abtInject);
     if (ctx.eventTypes?.CHAT_CHANGED)        ctx.eventSource.on(ctx.eventTypes.CHAT_CHANGED, () => setTimeout(abtReprocessAll, 150));
-    if (ctx.eventTypes?.MESSAGE_RECEIVED)    ctx.eventSource.on(ctx.eventTypes.MESSAGE_RECEIVED,  idx => setTimeout(() => { const el = document.querySelector(`.mes[mesid="${idx}"]`); if (el) abtProcess(el, idx); }, 150));
+    if (ctx.eventTypes?.MESSAGE_RECEIVED)    ctx.eventSource.on(ctx.eventTypes.MESSAGE_RECEIVED,  idx => { setTimeout(() => { const el = document.querySelector(`.mes[mesid="${idx}"]`); if (el) abtProcess(el, idx); }, 200); setTimeout(() => { const el = document.querySelector(`.mes[mesid="${idx}"]`); if (el && !el.querySelector(".abt-block")) abtProcess(el, idx); }, 800); });
     if (ctx.eventTypes?.MESSAGE_EDITED)      ctx.eventSource.on(ctx.eventTypes.MESSAGE_EDITED,    idx => setTimeout(() => { const el = document.querySelector(`.mes[mesid="${idx}"]`); if (el) abtProcess(el, idx); }, 300));
-    if (ctx.eventTypes?.MESSAGE_SWIPED)      ctx.eventSource.on(ctx.eventTypes.MESSAGE_SWIPED,    idx => setTimeout(() => { const el = document.querySelector(`.mes[mesid="${idx}"]`); if (el) abtProcess(el, idx); }, 150));
+    if (ctx.eventTypes?.MESSAGE_SWIPED)      ctx.eventSource.on(ctx.eventTypes.MESSAGE_SWIPED,    idx => setTimeout(() => { const el = document.querySelector(`.mes[mesid="${idx}"]`); if (el) abtProcess(el, idx); }, 200));
+    if (ctx.eventTypes?.MESSAGE_UPDATED)     ctx.eventSource.on(ctx.eventTypes.MESSAGE_UPDATED,   idx => setTimeout(() => { const el = document.querySelector(`.mes[mesid="${idx}"]`); if (el) abtProcess(el, idx); }, 300));
 
     const chat = document.getElementById("chat");
     if (chat) {
@@ -753,6 +955,10 @@ jQuery(async () => {
         const id = Number(node.getAttribute("mesid"));
         if (!isNaN(id)) abtProcess(node, id);
     });
+
+    // Delayed reprocess for mobile — messages may render late
+    setTimeout(abtReprocessAll, 500);
+    setTimeout(abtReprocessAll, 1500);
 
     abtInject();
     console.log("[Abattoir] loaded");
