@@ -1,0 +1,13 @@
+{
+  "display_name": "Abattoir Extension",
+  "loading_order": 15,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "keshkakuu",
+  "version": "0.1.0",
+  "homePage": "https://github.com/keshkakuu/abattoir-extension",
+  "auto_update": true,
+  "description": "Companion extension for the Abattoir preset. Toggleable random bad events, infoblock styles, and content preferences — all injected into context automatically."
+}

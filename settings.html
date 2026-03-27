@@ -1,0 +1,202 @@
+<div id="abattoir-extension" class="abattoir-panel">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <div class="abattoir-header">
+    <span class="abattoir-title">🔪 Abattoir</span>
+    <label class="abattoir-master-toggle" title="Enable / disable the extension">
+      <input type="checkbox" id="abattoir-enabled">
+      <span class="abattoir-slider"></span>
+    </label>
+  </div>
+
+  <div id="abattoir-body">
+
+    <!-- ── Random Events ──────────────────────────────────────────────────── -->
+    <details class="abattoir-section" open>
+      <summary class="abattoir-section-title">
+        Random Bad Events
+        <label class="abattoir-inline-toggle" title="Toggle random events">
+          <input type="checkbox" id="abattoir-events-enabled">
+          <span class="abattoir-slider abattoir-slider-sm"></span>
+        </label>
+      </summary>
+
+      <div id="abattoir-events-options" class="abattoir-section-body">
+
+        <div class="abattoir-row">
+          <label class="abattoir-label" for="abattoir-events-frequency">Frequency</label>
+          <select id="abattoir-events-frequency" class="abattoir-select">
+            <option value="rare">Rare — once in a while</option>
+            <option value="occasional">Occasional — now and then</option>
+            <option value="frequent">Frequent — bad day every day</option>
+          </select>
+        </div>
+
+        <div class="abattoir-label abattoir-sub-label">Event Types</div>
+        <div class="abattoir-checkbox-grid">
+
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-event-physicalHarm">
+            <span>Physical Harm</span>
+          </label>
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-event-death">
+            <span>Death</span>
+          </label>
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-event-bodyHorror">
+            <span>Body Horror</span>
+          </label>
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-event-environmental">
+            <span>Environmental Hazards</span>
+          </label>
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-event-social">
+            <span>Social / Political</span>
+          </label>
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-event-disease">
+            <span>Disease / Illness</span>
+          </label>
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-event-betrayal">
+            <span>Betrayal</span>
+          </label>
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-event-propertyDamage">
+            <span>Property Damage</span>
+          </label>
+
+        </div>
+      </div>
+    </details>
+
+    <!-- ── Infoblocks ─────────────────────────────────────────────────────── -->
+    <details class="abattoir-section">
+      <summary class="abattoir-section-title">Infoblock Style</summary>
+
+      <div class="abattoir-section-body">
+
+        <div class="abattoir-row">
+          <label class="abattoir-label" for="abattoir-infoblock-style">Style</label>
+          <select id="abattoir-infoblock-style" class="abattoir-select">
+            <option value="none">None — no infoblocks</option>
+            <option value="minimal">Minimal — bare essentials</option>
+            <option value="standard">Standard</option>
+            <option value="detailed">Detailed</option>
+            <option value="fancy">Fancy — decorative borders</option>
+            <option value="clinical">Clinical — cold &amp; precise</option>
+          </select>
+        </div>
+
+        <div id="abattoir-infoblock-fields">
+          <div class="abattoir-label abattoir-sub-label">Include in Infoblocks</div>
+          <div class="abattoir-checkbox-grid">
+            <label class="abattoir-check-label">
+              <input type="checkbox" id="abattoir-infoblock-show-status">
+              <span>Status Effects</span>
+            </label>
+            <label class="abattoir-check-label">
+              <input type="checkbox" id="abattoir-infoblock-show-injuries">
+              <span>Injuries</span>
+            </label>
+            <label class="abattoir-check-label">
+              <input type="checkbox" id="abattoir-infoblock-show-conditions">
+              <span>Conditions</span>
+            </label>
+            <label class="abattoir-check-label">
+              <input type="checkbox" id="abattoir-infoblock-show-stats">
+              <span>Stats</span>
+            </label>
+            <label class="abattoir-check-label">
+              <input type="checkbox" id="abattoir-infoblock-show-inventory">
+              <span>Inventory</span>
+            </label>
+          </div>
+        </div>
+
+      </div>
+    </details>
+
+    <!-- ── Content Preferences ────────────────────────────────────────────── -->
+    <details class="abattoir-section">
+      <summary class="abattoir-section-title">Content Preferences</summary>
+
+      <div class="abattoir-section-body">
+
+        <div class="abattoir-row">
+          <label class="abattoir-label" for="abattoir-violence-level">Violence Level</label>
+          <select id="abattoir-violence-level" class="abattoir-select">
+            <option value="mild">Mild</option>
+            <option value="moderate">Moderate</option>
+            <option value="graphic">Graphic</option>
+            <option value="extreme">Extreme</option>
+          </select>
+        </div>
+
+        <!-- Dark Themes -->
+        <div class="abattoir-label abattoir-sub-label">Dark Themes</div>
+        <div class="abattoir-checkbox-grid">
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-content-psychologicalHorror">
+            <span>Psychological Horror</span>
+          </label>
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-content-torture">
+            <span>Torture</span>
+          </label>
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-content-suffering">
+            <span>Suffering / Despair</span>
+          </label>
+        </div>
+
+        <!-- Power Dynamics -->
+        <div class="abattoir-label abattoir-sub-label">Power Dynamics</div>
+        <div class="abattoir-checkbox-grid">
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-content-dominanceSubmission">
+            <span>Dom / Sub</span>
+          </label>
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-content-captivity">
+            <span>Captivity</span>
+          </label>
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-content-controlManipulation">
+            <span>Control &amp; Manipulation</span>
+          </label>
+        </div>
+
+        <!-- Intimacy -->
+        <div class="abattoir-label abattoir-sub-label">Intimacy</div>
+        <div class="abattoir-checkbox-grid">
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-content-romance">
+            <span>Romance</span>
+          </label>
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-content-explicitSexual">
+            <span>Explicit Sexual</span>
+          </label>
+        </div>
+
+        <!-- Creature / Monster -->
+        <div class="abattoir-label abattoir-sub-label">Creature &amp; Monster</div>
+        <div class="abattoir-checkbox-grid">
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-content-monsterRomance">
+            <span>Monster Romance</span>
+          </label>
+          <label class="abattoir-check-label">
+            <input type="checkbox" id="abattoir-content-nonhumanEntities">
+            <span>Non-human Entities</span>
+          </label>
+        </div>
+
+      </div>
+    </details>
+
+  </div><!-- /#abattoir-body -->
+</div><!-- /#abattoir-extension -->
