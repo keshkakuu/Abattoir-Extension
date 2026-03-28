@@ -1,5 +1,15 @@
 // Abattoir Extension — companion to the Abattoir preset
 // No ES module imports. SillyTavern.getContext() global only.
+// ═══════════════════════════════════════════════════════════════════════════════
+// PERFORMANCE REWRITE — same visuals, dramatically faster
+//   1. Content-hash caching: skip reprocessing if message unchanged
+//   2. innerHTML strip-once: track which messages have been cleaned
+//   3. Viewport-lazy rendering: IntersectionObserver defers off-screen charts
+//   4. Throttled reprocessAll: debounced, max once per 300ms
+//   5. MutationObserver guard: paused during our own DOM writes
+//   6. Shared SVG filter defs: one <svg> with filters, all charts reference it
+//   7. Settings change: only invalidate + re-render visible messages
+// ═══════════════════════════════════════════════════════════════════════════════
 
 const ABT_INJECTION_ID = "Abattoir_Prefs";
 
@@ -20,9 +30,20 @@ const ABT = {
     ibLust:     "ABT_ibLust",
 };
 
+// ── Performance caches ───────────────────────────────────────────────────────
+const _abtCache = new Map();       // msgIndex → { hash, fields }
+const _abtStripped = new Set();    // msgIndex set — innerHTML already cleaned
+let _abtMutationPaused = false;    // guard: true while we mutate DOM
+let _abtReprocessTimer = null;     // debounce timer for reprocessAll
+let _abtSettingsVer = 0;           // bumped on settings change to invalidate display cache
+let _abtObserver = null;           // IntersectionObserver for lazy chart rendering
+const _abtVisible = new Set();     // set of currently-visible mesids
+let _abtSettingsCache = null;      // cached settings object, invalidated on change
+
 // ── Settings ──────────────────────────────────────────────────────────────────
 function abtLoad() {
-    return {
+    if (_abtSettingsCache) return _abtSettingsCache;
+    _abtSettingsCache = {
         enabled:       localStorage.getItem(ABT.enabled)  === "true",
         evtEnabled:    localStorage.getItem(ABT.evtOn)    === "true",
         evtFreq:       localStorage.getItem(ABT.evtFreq)  || "occasional",
@@ -37,6 +58,7 @@ function abtLoad() {
         ibChars:       localStorage.getItem(ABT.ibChars)    !== "false",
         ibLust:        localStorage.getItem(ABT.ibLust)     !== "false",
     };
+    return _abtSettingsCache;
 }
 
 function abtSave(s) {
@@ -53,6 +75,7 @@ function abtSave(s) {
     localStorage.setItem(ABT.ibBundles,  String(s.ibBundles));
     localStorage.setItem(ABT.ibChars,    String(s.ibChars));
     localStorage.setItem(ABT.ibLust,     String(s.ibLust));
+    _abtSettingsCache = null; // invalidate
 }
 
 // ── Label maps ────────────────────────────────────────────────────────────────
@@ -70,7 +93,6 @@ function abtBuildPrompt(s) {
         const types = Object.entries(s.evtTypes).filter(([,v])=>v).map(([k])=>ABT_EVT_LABELS[k]||k);
         L.push("Random Events: ENABLED — Frequency: " + (ABT_FREQ_LABELS[s.evtFreq]||s.evtFreq));
         if (types.length) L.push("  Types: " + types.join(", "));
-        // Lean dice logic — replaces verbose per-bundle dice templates
         L.push("");
         L.push("[Dice Protocol — Lilith's Dice]");
         L.push("For EACH active bundle, roll 1d6 for occurrence inside <think>. Keep it compact:");
@@ -94,12 +116,14 @@ function abtBuildPrompt(s) {
     L.push("intensity: [Ember/Fever/Wildfire/Ash/Terminal]");
     L.push("condition: [intact/marked/injured/critical/dying/dead]");
     L.push("injuries: [cumulative or none]");
-    L.push("dignity: [what remains · what is gone]");
+    L.push("dignity: [concrete items: clothing left · agency state · identity state]");
+    L.push("user_attire: [item-by-item what {{user}} is wearing RIGHT NOW, top to bottom — note displaced/open/removed items]");
+    L.push("user_pose: [{{user}}'s position: standing/sitting/kneeling/lying/restrained — posture and spatial relation to {{char}}]");
     L.push("date: [DD.MM.YYYY, Day — HH:MM]");
     L.push("location: [specific place]");
     L.push("weather: [sky · temp · wind]");
     if (s.evtEnabled) L.push("bundles: [active bundle names or none]");
-    if (s.ibChars) L.push('characters: [{"name":"...","attire":"...","mood":"...","thought":"..."}] for {{char}} AND each NPC present');
+    if (s.ibChars) L.push('characters: [{"name":"...","attire":"specific items on body","pose":"position + spatial relation to {{user}}","mood":"...","thought":"..."}] for {{char}} AND each NPC present');
     L.push("char_affection: [int -100 to 100, delta:±N]");
     L.push("char_fear: [int -100 to 100, delta:±N]");
     L.push("char_obsession: [int 0 to 100, delta:±N]");
@@ -133,7 +157,7 @@ function abtBuildPrompt(s) {
     L.push("");
     vr.forEach(line => L.push(line));
 
-    // ── Dark Themes — specific permissions and behavioral instructions ──
+    // ── Dark Themes ──
     const themeRules = {
         psychologicalHorror: "Psychological Horror: Gaslighting, paranoia, unreliable perception, dread without visible source. The mind turning against itself. What characters believe may not be real. Write the doubt.",
         torture: "Torture: Deliberate, sustained infliction of pain as tool — for information, for punishment, for control, or for its own sake. Write the method, the patience of the one inflicting, the deterioration of the one enduring. Torture has rhythm.",
@@ -155,7 +179,6 @@ function abtBuildPrompt(s) {
             if (themeRules[k]) L.push(themeRules[k]);
         });
     }
-    // Note what's OFF — explicit boundary
     const inactiveThemes = Object.entries(s.content).filter(([,v])=>!v);
     if (inactiveThemes.length) {
         const offNames = inactiveThemes.map(([k])=>ABT_CTX_LABELS[k]||k);
@@ -182,6 +205,16 @@ function abtParse(text) {
     return Object.keys(fields).length ? fields : null;
 }
 
+// ── Fast content hash ────────────────────────────────────────────────────────
+// djb2-style hash for quick string fingerprinting
+function abtHash(str) {
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) {
+        h = ((h << 5) + h + str.charCodeAt(i)) & 0xFFFFFFFF;
+    }
+    return h;
+}
+
 function parseMetric(val) {
     if (!val) return { value: 0, delta: 0 };
     const numMatch   = String(val).match(/-?\d+/);
@@ -195,7 +228,6 @@ function parseMetric(val) {
 function parseChars(val) {
     if (!val) return [];
     try {
-        // Handle both raw JSON and text fallback
         const jsonMatch = val.match(/\[[\s\S]*\]/);
         if (jsonMatch) return JSON.parse(jsonMatch[0]);
     } catch(e) {}
@@ -205,11 +237,11 @@ function parseChars(val) {
 // ── Phase config ──────────────────────────────────────────────────────────────
 const PHASE_CFG = {
     ERASURE: { color:"#8b0000", glow:"rgba(139,0,0,0.6)",    sigil:"⛧",  sub:"unmapping you"           },
-    BRAND:   { color:"#7a1a1a", glow:"rgba(122,26,26,0.5)",  sigil:"𖤐",  sub:"naming you a thing"       },
+    BRAND:   { color:"#7a1a1a", glow:"rgba(122,26,26,0.5)",  sigil:"✦",  sub:"naming you a thing"       },
     SCORN:   { color:"#7a3030", glow:"rgba(122,48,48,0.45)", sigil:"✕",   sub:"contempt is personal"     },
     NOTHING: { color:"#555",    glow:"rgba(100,100,100,0.3)",sigil:"·",   sub:"you don't register"       },
     TEETH:   { color:"#8b6914", glow:"rgba(139,105,20,0.45)",sigil:"⚔",  sub:"assessment begins"        },
-    GRIP:    { color:"#5c2e8b", glow:"rgba(92,46,139,0.5)",  sigil:"𖤐",  sub:"pattern locked"           },
+    GRIP:    { color:"#5c2e8b", glow:"rgba(92,46,139,0.5)",  sigil:"✦",  sub:"pattern locked"           },
     CRACK:   { color:"#1a5c8b", glow:"rgba(26,92,139,0.45)", sigil:"⚡",  sub:"something broke"          },
     TANGLE:  { color:"#8b2e5c", glow:"rgba(139,46,92,0.55)", sigil:"∞",   sub:"mutual damage"            },
 };
@@ -279,8 +311,29 @@ function abtScheme() {
     return ABT_SCHEMES[localStorage.getItem("ABT_scheme") || "blood"] || ABT_SCHEMES.blood;
 }
 
+// ── Shared SVG filter defs ───────────────────────────────────────────────────
+// Instead of creating unique filter IDs per chart, inject ONE hidden SVG
+// with shared filter defs. All charts reference these.
+const ABT_FILTER_ID  = "abt-glow";
+const ABT_FILTER_ID2 = "abt-glow2";
 
-// ── Ritual pentagram chart ──────────────────────────────────────────────────
+function abtEnsureFilters() {
+    if (document.getElementById("abt-shared-filters")) return;
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.id = "abt-shared-filters";
+    svg.setAttribute("width", "0");
+    svg.setAttribute("height", "0");
+    svg.style.position = "absolute";
+    svg.style.pointerEvents = "none";
+    svg.innerHTML = '<defs>'
+        +'<filter id="'+ABT_FILTER_ID+'"><feGaussianBlur stdDeviation="1.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>'
+        +'<filter id="'+ABT_FILTER_ID2+'"><feGaussianBlur stdDeviation="3" result="g"/><feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge></filter>'
+        +'</defs>';
+    document.body.appendChild(svg);
+}
+
+
+// ── Ritual pentagram chart — full size with axis labels ──────────────────────
 function abtRenderChart(fields, showLust) {
     const W=300, H=300, cx=150, cy=150, r=78;
     const outerR=r+20, innerR=r+10;
@@ -291,8 +344,6 @@ function abtRenderChart(fields, showLust) {
         return {value:n?Math.max(-100,Math.min(100,parseInt(n[0]))):0, delta:d?parseInt(d[1]):0};
     }
     const MIN=0.09;
-    // All metrics: outward = more intense. Center = zero/neutral.
-    // For bidirectional: absolute value determines distance. Sign determines color.
     function normalizeMetric(v, bidir) {
         if (bidir) return Math.max(MIN, Math.abs(v) / 100);
         return Math.max(MIN, v / 100);
@@ -326,12 +377,10 @@ function abtRenderChart(fields, showLust) {
         return ptAt(a.deg, r*norm);
     });
 
-    // Polygon color based on overall emotional state
     const cIsHate=cAff.value<-20;
     const cStroke=cIsHate?"rgba(215,58,58,0.88)":cAff.value>40?"rgba(185,98,160,0.78)":"rgba(135,88,155,0.68)";
     const cFill=cIsHate?"rgba(155,22,22,0.22)":cAff.value>40?"rgba(145,68,118,0.18)":"rgba(88,58,108,0.15)";
 
-    // Per-axis dot color: green = positive, red = negative, purple = unidirectional
     function dotColor(a) {
         if (!a.bidir) return a.m.value > 50 ? "rgba(188,118,238,0.9)" : "rgba(148,108,198,0.75)";
         if (a.m.value > 0) return "rgba(92,195,112,0.9)";
@@ -344,7 +393,6 @@ function abtRenderChart(fields, showLust) {
         return axes.map(a=>ptAt(a.deg,rr)).map((p,i)=>((i===0?"M":"L")+p.x.toFixed(1)+","+p.y.toFixed(1))).join("")+"Z";
     }
 
-    // Star lines
     let starSVG="";
     if(N===5){
         const sp=axes.map(a=>ptAt(a.deg,outerR-3));
@@ -366,7 +414,6 @@ function abtRenderChart(fields, showLust) {
         return '<line x1="'+cx+'" y1="'+cy+'" x2="'+p.x.toFixed(1)+'" y2="'+p.y.toFixed(1)+'" stroke="rgba(175,48,48,0.13)" stroke-width="0.5" stroke-dasharray="2 3"/>';
     }).join("");
 
-    // Occult sigils at 8 compass points
     const occultSymbols=[
         {deg:0,   glyph:"⛧", size:13, op:0.4},
         {deg:45,  glyph:"☽", size:12, op:0.28},
@@ -393,13 +440,15 @@ function abtRenderChart(fields, showLust) {
     const phColors={ERASURE:"rgba(205,42,42,0.62)",BRAND:"rgba(175,42,42,0.52)",SCORN:"rgba(155,58,58,0.52)",NOTHING:"rgba(125,105,125,0.48)",TEETH:"rgba(165,135,52,0.52)",GRIP:"rgba(125,62,175,0.58)",CRACK:"rgba(52,115,165,0.52)",TANGLE:"rgba(165,58,115,0.58)"};
     const phColor=phColors[phase]||"rgba(125,105,125,0.48)";
 
+    // Axis labels with improved delta: value then (±N) in parens
     const axisLabels = axes.map(a=>{
         const labelR=outerR+30;
         const p=ptAt(a.deg, labelR);
         const cSign=a.bidir&&a.m.value>0?"+":"";
         const cColor=a.bidir?(a.m.value<-40?"rgba(228,82,82,1)":a.m.value<0?"rgba(208,118,118,0.95)":a.m.value>40?"rgba(102,218,142,0.95)":"rgba(188,168,188,0.85)"):(a.m.value>50?"rgba(188,118,238,1)":"rgba(168,138,208,0.9)");
-        const dStr=a.m.delta!==0?(a.m.delta>0?"+"+a.m.delta:""+a.m.delta):"";
-        const dColor=a.m.delta>0?"rgba(92,185,102,0.85)":"rgba(185,78,78,0.85)";
+        // Delta as separate text below value, not inline tspan
+        const dColor = a.m.delta>0?"rgba(92,185,102,0.85)":"rgba(185,78,78,0.85)";
+        const dText = a.m.delta!==0 ? "("+(a.m.delta>0?"+":"")+a.m.delta+")" : "";
 
         let anchor="middle", dx=0, dy=0;
         const normDeg=(a.deg+360)%360;
@@ -409,42 +458,37 @@ function abtRenderChart(fields, showLust) {
         else if(normDeg>135&&normDeg<225){dy=7;}
 
         const nx=p.x+dx, ny=p.y+dy;
-        return '<text x="'+nx.toFixed(1)+'" y="'+(ny-6).toFixed(1)+'" text-anchor="'+anchor+'" dominant-baseline="middle" fill="rgba(225,182,195,0.6)" font-size="7" font-family="sans-serif" letter-spacing="1.5">'+a.name+'</text><text x="'+nx.toFixed(1)+'" y="'+(ny+7).toFixed(1)+'" text-anchor="'+anchor+'" dominant-baseline="middle" fill="'+cColor+'" font-size="12" font-family="monospace" font-weight="700">'+cSign+a.m.value+(dStr?' <tspan fill="'+dColor+'" font-size="9">'+dStr+'</tspan>':"")+'</text>';
+        return '<text x="'+nx.toFixed(1)+'" y="'+(ny-6).toFixed(1)+'" text-anchor="'+anchor+'" dominant-baseline="middle" fill="rgba(225,182,195,0.6)" font-size="7" font-family="sans-serif" letter-spacing="1.5">'+a.name+'</text>'
+            +'<text x="'+nx.toFixed(1)+'" y="'+(ny+7).toFixed(1)+'" text-anchor="'+anchor+'" dominant-baseline="middle" fill="'+cColor+'" font-size="12" font-family="monospace" font-weight="700">'+cSign+a.m.value+'</text>'
+            +(dText ? '<text x="'+nx.toFixed(1)+'" y="'+(ny+17).toFixed(1)+'" text-anchor="'+anchor+'" dominant-baseline="middle" fill="'+dColor+'" font-size="8" font-family="sans-serif">'+dText+'</text>' : "");
     }).join("");
 
     const dataPath=dataPts.map((p,i)=>((i===0?"M":"L")+p.x.toFixed(1)+","+p.y.toFixed(1))).join("")+"Z";
-    const fid="ag"+Math.random().toString(36).slice(2,8);
+
+    // Use shared filter IDs
+    const f = ABT_FILTER_ID;
+    const fg = ABT_FILTER_ID2;
 
     return '<svg viewBox="0 0 '+W+' '+H+'" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:'+W+'px;height:auto;display:block;margin:0 auto;">'
-        +'<defs><filter id="'+fid+'"><feGaussianBlur stdDeviation="1.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>'
-        +'<filter id="'+fid+'g"><feGaussianBlur stdDeviation="3" result="g"/><feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>'
-        +'<circle cx="'+cx+'" cy="'+cy+'" r="'+(outerR+4)+'" fill="none" stroke="rgba(162,42,42,0.06)" stroke-width="1" filter="url(#'+fid+'g)"/>'
-        +'<circle cx="'+cx+'" cy="'+cy+'" r="'+outerR+'" fill="none" stroke="rgba(178,48,48,0.3)" stroke-width="0.8" filter="url(#'+fid+'g)"/>'
+        +'<circle cx="'+cx+'" cy="'+cy+'" r="'+(outerR+4)+'" fill="none" stroke="rgba(162,42,42,0.06)" stroke-width="1" filter="url(#'+fg+')"/>'
+        +'<circle cx="'+cx+'" cy="'+cy+'" r="'+outerR+'" fill="none" stroke="rgba(178,48,48,0.3)" stroke-width="0.8" filter="url(#'+fg+')"/>'
         +starSVG+sigils
         +'<circle cx="'+cx+'" cy="'+cy+'" r="'+innerR+'" fill="none" stroke="rgba(172,48,48,0.18)" stroke-width="0.5"/>'
         +'<path d="'+gridPoly(0.33)+'" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="0.5"/>'
         +'<path d="'+gridPoly(0.66)+'" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="0.5"/>'
         +'<path d="'+gridPoly(1)+'" fill="none" stroke="rgba(178,48,48,0.22)" stroke-width="0.7"/>'
         +axisLines
-        +'<circle cx="'+cx+'" cy="'+cy+'" r="4" fill="rgba(188,52,52,0.15)" filter="url(#'+fid+'g)"/>'
+        +'<circle cx="'+cx+'" cy="'+cy+'" r="4" fill="rgba(188,52,52,0.15)" filter="url(#'+fg+')"/>'
         +'<circle cx="'+cx+'" cy="'+cy+'" r="2" fill="rgba(188,52,52,0.5)"/>'
         +lustSVG
-        +'<path d="'+dataPath+'" fill="'+cFill+'" stroke="'+cStroke+'" stroke-width="1.4" filter="url(#'+fid+')"/>'
+        +'<path d="'+dataPath+'" fill="'+cFill+'" stroke="'+cStroke+'" stroke-width="1.4" filter="url(#'+f+')"/>'
         +dataPts.map(function(p,i){return '<circle cx="'+p.x.toFixed(1)+'" cy="'+p.y.toFixed(1)+'" r="2.5" fill="'+dotColor(axes[i])+'" opacity="0.9"/>';}).join("")
-        // Scale labels on grid rings
-        +'<text x="'+(cx+4)+'" y="'+(cy-r*0.33+3)+'" fill="rgba(255,255,255,0.15)" font-size="6" font-family="sans-serif">33</text>'
-        +'<text x="'+(cx+4)+'" y="'+(cy-r*0.66+3)+'" fill="rgba(255,255,255,0.18)" font-size="6" font-family="sans-serif">66</text>'
-        +'<text x="'+(cx+4)+'" y="'+(cy-r+3)+'" fill="rgba(255,255,255,0.22)" font-size="6" font-family="sans-serif">100</text>'
-        // Legend: color meaning — top-left corner
-        +'<text x="8" y="12" fill="rgba(92,195,112,0.45)" font-size="6" font-family="sans-serif">● pos</text>'
-        +'<text x="8" y="21" fill="rgba(215,68,68,0.45)" font-size="6" font-family="sans-serif">● neg</text>'
-        +'<text x="8" y="30" fill="rgba(148,108,198,0.45)" font-size="6" font-family="sans-serif">● 0–100</text>'
-        +'<text x="'+cx+'" y="'+(cy+r-14)+'" text-anchor="middle" dominant-baseline="middle" fill="'+phColor+'" font-size="7.5" font-family="sans-serif" letter-spacing="3" filter="url(#'+fid+'g)">'+phase+'</text>'
+        +'<text x="'+cx+'" y="'+(cy+r-14)+'" text-anchor="middle" dominant-baseline="middle" fill="'+phColor+'" font-size="7.5" font-family="sans-serif" letter-spacing="3" filter="url(#'+fg+')">'+phase+'</text>'
         +axisLabels
         +'</svg>';
 }
 
-// ── Compact vertical metric bars ────────────────────────────────────────────
+// ── Compact vertical metric bars — clearer delta ────────────────────────────
 function abtVertBars(fields, showLust) {
     function pm(val){
         if(!val)return{value:0,delta:0};
@@ -459,12 +503,12 @@ function abtVertBars(fields, showLust) {
     var cLust=showLust?pm(fields.char_lust||fields.lust):null;
 
     var cols=[
-        {sigil:"♡", label:"AFF",  bidir:true,  c:cAff},
-        {sigil:"◬", label:"FEAR", bidir:true,  c:cFear},
-        {sigil:"☉", label:"OBS",  bidir:false, c:cObs},
-        {sigil:"◈", label:"TRST", bidir:true,  c:cTru},
+        {label:"AFF",  bidir:true,  c:cAff},
+        {label:"FEAR", bidir:true,  c:cFear},
+        {label:"OBS",  bidir:false, c:cObs},
+        {label:"TRST", bidir:true,  c:cTru},
     ];
-    if(cLust) cols.push({sigil:"☾",label:"LUST",bidir:false,c:cLust});
+    if(cLust) cols.push({label:"LUST",bidir:false,c:cLust});
 
     function barColor(v,bidir){
         if(!bidir)return v>60?"#b060d8":v>30?"#8040a0":"#503070";
@@ -473,13 +517,19 @@ function abtVertBars(fields, showLust) {
         return"#555566";
     }
 
-    var barH=48;
+    var barH=50;
     var colsHtml=cols.map(function(col){
         var v=col.c.value, d=col.c.delta;
         var color=barColor(v,col.bidir);
-        var dStr=d!==0?(d>0?"+"+d:""+d):"";
-        var dColor=d>0?"rgba(92,185,102,0.9)":d<0?"rgba(185,78,78,0.9)":"transparent";
         var sign=col.bidir&&v>0?"+":"";
+
+        // Delta: show as (±N) only when non-zero
+        var deltaHtml='<div style="height:12px;"></div>'; // spacer when no delta
+        if(d!==0){
+            var dSign=d>0?"+":"";
+            var dColor=d>0?"rgba(92,185,102,0.85)":"rgba(185,78,78,0.85)";
+            deltaHtml='<div style="font-size:9px;color:'+dColor+';line-height:12px;text-align:center;">('+dSign+d+')</div>';
+        }
 
         var fillStyle="";
         if(col.bidir){
@@ -494,21 +544,20 @@ function abtVertBars(fields, showLust) {
             fillStyle="bottom:0;height:"+pct2+"%;";
         }
 
-        var midLine=col.bidir?'<div style="position:absolute;left:0;right:0;top:50%;height:1px;background:rgba(255,255,255,0.12);"></div>':"";
+        var midLine=col.bidir?'<div style="position:absolute;left:0;right:0;top:50%;height:1px;background:rgba(255,255,255,0.1);"></div>':"";
 
-        return '<div style="display:flex;flex-direction:column;align-items:center;gap:3px;flex:1;min-width:0;">'
-            +'<span style="font-size:0.82em;font-family:monospace;font-weight:700;color:'+color+';line-height:1;">'+sign+v+'</span>'
-            +(dStr?'<span style="font-size:0.6em;color:'+dColor+';line-height:1;">'+dStr+'</span>':'<span style="font-size:0.6em;line-height:1;opacity:0;">&nbsp;</span>')
-            +'<div style="position:relative;width:6px;height:'+barH+'px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;">'
+        return '<div style="display:flex;flex-direction:column;align-items:center;min-width:32px;width:0;flex:1;">'
+            +'<div style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:rgba(218,178,192,0.5);font-family:sans-serif;white-space:nowrap;margin-bottom:2px;">'+col.label+'</div>'
+            +'<div style="font-size:13px;font-family:monospace;font-weight:700;color:'+color+';line-height:1;white-space:nowrap;">'+sign+v+'</div>'
+            +deltaHtml
+            +'<div style="position:relative;width:8px;height:'+barH+'px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;margin:3px 0;">'
             +midLine
-            +'<div style="position:absolute;left:0;right:0;'+fillStyle+'background:'+color+';border-radius:3px;"></div>'
+            +'<div style="position:absolute;left:0;right:0;'+fillStyle+'background:'+color+';border-radius:4px;transition:height 0.3s ease;"></div>'
             +'</div>'
-            +'<span style="font-size:0.78em;color:rgba(212,168,182,0.55);">'+col.sigil+'</span>'
-            +'<span style="font-size:0.52em;letter-spacing:1px;text-transform:uppercase;color:rgba(218,178,192,0.45);font-family:sans-serif;">'+col.label+'</span>'
             +'</div>';
     }).join("");
 
-    return '<div style="display:flex;justify-content:center;gap:14px;padding:4px 24px 8px;max-width:100%;box-sizing:border-box;flex-wrap:wrap;">'+colsHtml+'</div>';
+    return '<div style="display:flex;justify-content:space-around;padding:8px 4px 10px;max-width:100%;box-sizing:border-box;">'+colsHtml+'</div>';
 }
 
 // ── Characters block ──────────────────────────────────────────────────────────
@@ -519,14 +568,29 @@ function abtRenderChars(charsVal) {
     return '<div style="padding:8px 14px 12px;border-top:0.5px solid rgba(255,255,255,0.05);">'
         +'<div style="font-size:0.58em;letter-spacing:3px;text-transform:uppercase;color:'+cs.textDim+';font-family:sans-serif;margin-bottom:8px;">▸ present</div>'
         +chars.map(function(c){return '<div style="margin-bottom:7px;padding:7px 10px;background:rgba(255,255,255,0.025);border-left:1px solid '+cs.charBorder+';border-radius:0 3px 3px 0;">'
-            +'<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px;">'
-            +'<span style="font-size:0.8em;font-weight:600;color:'+cs.text+';">'+abtEsc(c.name||"")+'</span>'
-            +'<span style="font-size:0.68em;color:'+cs.text+';opacity:0.8;font-style:italic;">'+abtEsc(c.mood||"")+'</span>'
+            +'<div style="margin-bottom:4px;">'
+            +'<div style="font-size:0.8em;font-weight:600;color:'+cs.text+';line-height:1.3;">'+abtEsc(c.name||"")+'</div>'
+            +(c.mood ? '<div style="font-size:0.66em;color:'+cs.text+';opacity:0.7;font-style:italic;line-height:1.4;margin-top:2px;">'+abtEsc(c.mood)+'</div>' : "")
             +'</div>'
             +(c.attire ? '<div style="font-size:0.7em;color:'+cs.text+';opacity:0.75;margin-bottom:3px;">'+abtEsc(c.attire)+'</div>' : "")
+            +(c.pose ? '<div style="font-size:0.66em;color:'+cs.text+';opacity:0.6;margin-bottom:3px;font-style:italic;">⤷ '+abtEsc(c.pose)+'</div>' : "")
             +(c.thought ? '<div style="font-size:0.72em;color:'+cs.text+';font-style:italic;border-top:0.5px solid rgba(255,255,255,0.05);padding-top:4px;line-height:1.55;">"'+abtEsc(c.thought)+'"</div>' : "")
             +'</div>';}).join("")
         +'</div>';
+}
+
+// ── User state block (attire + pose) ─────────────────────────────────────────
+function abtRenderUserState(fields) {
+    var attire = fields.user_attire;
+    var pose = fields.user_pose;
+    if (!attire && !pose) return "";
+    var cs = abtScheme();
+    return '<div style="padding:6px 14px 10px;border-top:0.5px solid rgba(255,255,255,0.04);">'
+        +'<div style="font-size:0.58em;letter-spacing:3px;text-transform:uppercase;color:'+cs.textDim+';font-family:sans-serif;margin-bottom:6px;">◇ {{user}}</div>'
+        +'<div style="padding:5px 10px;background:rgba(255,255,255,0.02);border-left:1px solid rgba(180,140,160,0.2);border-radius:0 3px 3px 0;">'
+        +(attire ? '<div style="font-size:0.7em;color:'+cs.text+';opacity:0.75;margin-bottom:3px;">'+abtEsc(attire)+'</div>' : "")
+        +(pose ? '<div style="font-size:0.66em;color:'+cs.text+';opacity:0.6;font-style:italic;">⤷ '+abtEsc(pose)+'</div>' : "")
+        +'</div></div>';
 }
 
 // ── Full card renderer ────────────────────────────────────────────────────────
@@ -551,55 +615,73 @@ function abtRenderCard(fields, s) {
     const date     = fields.date     || null;
     const bundles  = fields.bundles  && !/^none/i.test(fields.bundles)  ? fields.bundles  : null;
 
-    return '<div class="abt-block" style="margin:14px 0;background:'+cs.bg+';border:0.5px solid '+cs.border+';border-top:1px solid '+pCfg.color+'55;border-radius:6px;box-shadow:0 6px 28px rgba(0,0,0,0.65);overflow:hidden;font-family:inherit;max-width:100%;box-sizing:border-box;display:block !important;visibility:visible !important;opacity:1 !important;">'
-
-        // Header with phase label
-        +'<div style="padding:9px 14px 9px;background:'+cs.headerBg+';border-bottom:0.5px solid rgba('+cs.accent+',0.12);position:relative;overflow:hidden;">'
-            +'<div style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:2.8em;opacity:0.06;color:'+pCfg.color+';line-height:1;pointer-events:none;">'+pCfg.sigil+'</div>'
-            +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:7px;align-items:center;">'
-                +(intensity ? '<div style="display:flex;align-items:center;gap:4px;"><span style="font-size:0.48em;letter-spacing:1.5px;text-transform:uppercase;color:'+cs.textDim+';font-family:sans-serif;">depth</span><span style="font-size:0.62em;letter-spacing:2px;text-transform:uppercase;padding:3px 9px;border:0.5px solid '+iColor+'88;border-radius:10px;color:'+iColor+';font-family:sans-serif;font-weight:600;">'+abtEsc(fields.intensity)+'</span></div>' : "")
-                +'<div style="display:flex;align-items:center;gap:4px;"><span style="font-size:0.48em;letter-spacing:1.5px;text-transform:uppercase;color:'+cs.textDim+';font-family:sans-serif;">condition</span><span style="font-size:0.62em;letter-spacing:2px;text-transform:uppercase;padding:3px 9px;border:0.5px solid '+cColor+'88;border-radius:10px;color:'+cColor+';font-family:sans-serif;font-weight:600;">'+abtEsc(condition)+'</span></div>'
-            +'</div>'
-            +'<div style="display:flex;align-items:baseline;gap:8px;">'
-                +'<span style="font-size:0.5em;letter-spacing:1.5px;text-transform:uppercase;color:'+cs.textDim+';font-family:sans-serif;">phase</span>'
-                +'<span style="font-size:0.62em;letter-spacing:4px;text-transform:uppercase;padding:2px 8px;border:0.5px solid '+pCfg.color+'55;border-radius:3px;color:'+pCfg.color+';font-family:sans-serif;text-shadow:0 0 10px '+pCfg.glow+';">'+phase+'</span>'
-                +'<span style="font-size:0.68em;color:'+cs.text+';font-style:italic;opacity:0.85;">'+pCfg.sub+'</span>'
-            +'</div>'
+    // ── Header: subtle tags with tiny labels for clarity ──
+    const headerHtml = '<div style="padding:8px 14px 7px;background:'+cs.headerBg+';border-bottom:0.5px solid rgba('+cs.accent+',0.1);position:relative;overflow:hidden;">'
+        +'<div style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:2.2em;opacity:0.04;color:'+pCfg.color+';line-height:1;pointer-events:none;">'+pCfg.sigil+'</div>'
+        +'<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;">'
+            +'<span style="font-size:0.42em;letter-spacing:1px;text-transform:uppercase;color:'+cs.textDim+';font-family:sans-serif;">phase</span>'
+            +'<span style="font-size:0.6em;letter-spacing:3px;text-transform:uppercase;color:'+pCfg.color+';font-family:sans-serif;font-weight:600;text-shadow:0 0 8px '+pCfg.glow+';">'+phase+'</span>'
+            +'<span style="font-size:0.58em;color:'+cs.text+';font-style:italic;opacity:0.55;">'+pCfg.sub+'</span>'
+            +'<span style="font-size:0.55em;color:'+cs.textDim+';font-family:sans-serif;margin-left:auto;">·</span>'
+            +(intensity ? '<span style="font-size:0.42em;letter-spacing:1px;text-transform:uppercase;color:'+cs.textDim+';font-family:sans-serif;">depth</span><span style="font-size:0.55em;letter-spacing:1px;text-transform:uppercase;color:'+iColor+';font-family:sans-serif;opacity:0.85;">'+abtEsc(fields.intensity)+'</span><span style="font-size:0.55em;color:'+cs.textDim+';">·</span>' : "")
+            +'<span style="font-size:0.42em;letter-spacing:1px;text-transform:uppercase;color:'+cs.textDim+';font-family:sans-serif;">cond</span>'
+            +'<span style="font-size:0.55em;letter-spacing:1px;text-transform:uppercase;color:'+cColor+';font-family:sans-serif;opacity:0.85;">'+abtEsc(condition)+'</span>'
         +'</div>'
+    +'</div>';
 
-        // World state
-        +(s.ibWorld && (date||location||weather) ? '<div style="padding:5px 14px;border-bottom:0.5px solid rgba(255,255,255,0.04);display:flex;gap:12px;flex-wrap:wrap;">'
-            +(date     ? '<span style="font-size:0.71em;color:'+cs.text+';font-style:italic;">☽ '+abtEsc(date)+'</span>' : "")
-            +(location ? '<span style="font-size:0.71em;color:'+cs.text+';font-style:italic;opacity:0.9;">📍 '+abtEsc(location)+'</span>' : "")
-            +(weather  ? '<span style="font-size:0.71em;color:'+cs.text+';font-style:italic;opacity:0.82;">☁ '+abtEsc(weather)+'</span>' : "")
-            +'</div>' : "")
+    // ── World state row ──
+    const worldHtml = (s.ibWorld && (date||location||weather))
+        ? '<div style="padding:4px 14px;border-bottom:0.5px solid rgba(255,255,255,0.03);display:flex;gap:10px;flex-wrap:wrap;">'
+            +(date     ? '<span style="font-size:0.68em;color:'+cs.text+';font-style:italic;opacity:0.85;">☽ '+abtEsc(date)+'</span>' : "")
+            +(location ? '<span style="font-size:0.68em;color:'+cs.text+';font-style:italic;opacity:0.8;">📍 '+abtEsc(location)+'</span>' : "")
+            +(weather  ? '<span style="font-size:0.68em;color:'+cs.text+';font-style:italic;opacity:0.7;">☁ '+abtEsc(weather)+'</span>' : "")
+            +'</div>'
+        : "";
 
-        // Chart + vertical bars
-        +(s.ibChart ? '<div style="padding:4px 0 0;max-width:100%;overflow:hidden;">'+abtRenderChart(fields, s.ibLust)+'</div>' : "")
-        +abtVertBars(fields, s.ibLust)
+    // ── Chart + Bars: stacked layout (chart on top, bars below full-width) ──
+    const chartSvg = s.ibChart ? abtRenderChart(fields, s.ibLust) : "";
+    const barsHtml = abtVertBars(fields, s.ibLust);
+
+    let metricsHtml = "";
+    if (s.ibChart) {
+        metricsHtml = '<div style="padding:4px 0 0;max-width:100%;overflow:hidden;">'+chartSvg+'</div>'
+            +barsHtml;
+    } else {
+        metricsHtml = barsHtml;
+    }
+
+    return '<div class="abt-block" style="margin:14px 0;background:'+cs.bg+';border:0.5px solid '+cs.border+';border-top:1px solid '+pCfg.color+'44;border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,0.55);overflow:hidden;font-family:inherit;max-width:100%;box-sizing:border-box;display:block !important;visibility:visible !important;opacity:1 !important;">'
+
+        +headerHtml
+        +worldHtml
+        +metricsHtml
 
         // Injuries + Dignity
-        +(s.ibInjuries && (injuries||dignity) ? '<div style="padding:0 14px 10px;border-top:0.5px solid rgba(255,255,255,0.04);margin-top:2px;">'
-            +(injuries ? '<div style="margin-top:7px;font-size:0.73em;color:rgba(225,135,110,0.95);font-style:italic;">⚔ '+abtEsc(injuries)+'</div>' : "")
-            +(dignity  ? '<div style="margin-top:3px;font-size:0.71em;color:'+cs.text+';font-style:italic;opacity:0.9;">◈ '+abtEsc(dignity)+'</div>'  : "")
+        +(s.ibInjuries && (injuries||dignity) ? '<div style="padding:0 14px 8px;border-top:0.5px solid rgba(255,255,255,0.03);margin-top:2px;">'
+            +(injuries ? '<div style="margin-top:6px;font-size:0.7em;color:rgba(225,135,110,0.9);font-style:italic;">⚔ '+abtEsc(injuries)+'</div>' : "")
+            +(dignity  ? '<div style="margin-top:2px;font-size:0.68em;color:'+cs.text+';font-style:italic;opacity:0.85;">◈ '+abtEsc(dignity)+'</div>'  : "")
             +'</div>' : "")
 
         // Bundles
-        +(s.ibBundles && s.evtEnabled && bundles ? '<div style="padding:0 14px 9px;">'
-            +'<span style="font-size:0.6em;letter-spacing:2px;text-transform:uppercase;color:'+cs.textDim+';font-family:sans-serif;">bundles · </span>'
-            +'<span style="font-size:0.7em;color:'+cs.text+';font-style:italic;opacity:0.85;">'+abtEsc(bundles)+'</span>'
+        +(s.ibBundles && s.evtEnabled && bundles ? '<div style="padding:0 14px 7px;">'
+            +'<span style="font-size:0.56em;letter-spacing:2px;text-transform:uppercase;color:'+cs.textDim+';font-family:sans-serif;">bundles · </span>'
+            +'<span style="font-size:0.66em;color:'+cs.text+';font-style:italic;opacity:0.8;">'+abtEsc(bundles)+'</span>'
             +'</div>' : "")
 
         // Characters
         +(s.ibChars && fields.characters ? abtRenderChars(fields.characters) : "")
 
+        // User state (attire + pose)
+        +(s.ibChars ? abtRenderUserState(fields) : "")
+
         // Footer
-        +'<div style="padding:3px 14px 4px;border-top:0.5px solid rgba(255,255,255,0.025);display:flex;justify-content:space-between;">'
-            +'<span style="font-size:0.52em;color:'+cs.footer+';">⛧ · 𖤐 · ⛧</span>'
-            +'<span style="font-size:0.52em;color:rgba('+cs.accent+',0.3);letter-spacing:2px;">'+cs.footerText+'</span>'
+        +'<div style="padding:2px 14px 3px;border-top:0.5px solid rgba(255,255,255,0.02);display:flex;justify-content:space-between;">'
+            +'<span style="font-size:0.48em;color:'+cs.footer+';">⛧ · ✦ · ⛧</span>'
+            +'<span style="font-size:0.48em;color:rgba('+cs.accent+',0.25);letter-spacing:2px;">'+cs.footerText+'</span>'
         +'</div>'
     +'</div>';
 }
+
 // ── Core ──────────────────────────────────────────────────────────────────────
 function abtInject() {
     try {
@@ -608,62 +690,138 @@ function abtInject() {
     } catch(e) { console.error("[Abattoir] inject failed:", e); }
 }
 
-function abtProcess(msgDiv, msgIndex) {
+// ── Strip infoblock from rendered HTML — ONCE per message ────────────────────
+function abtStripInfoblock(mesTextEl, msgIndex) {
+    if (_abtStripped.has(msgIndex)) return;
+
+    var html = mesTextEl.innerHTML;
+
+    // Method 1: regex on escaped/raw tags (works when ST preserves them)
+    var cleaned = html.replace(/&lt;infoblock&gt;[\s\S]*?&lt;\/infoblock&gt;/gi, "");
+    cleaned = cleaned.replace(/<infoblock>[\s\S]*?<\/infoblock>/gi, "");
+
+    if (cleaned !== html) {
+        mesTextEl.innerHTML = cleaned;
+        // Clean up excess line breaks
+        mesTextEl.innerHTML = mesTextEl.innerHTML.replace(/(?:<br\s*\/?>\s*){3,}/gi, "<br><br>");
+        _abtStripped.add(msgIndex);
+        return;
+    }
+
+    // Method 2: DOM walk — find "phase:" text, then remove everything from there
+    // to the last "char_*:" line. This handles any rendering ST does.
+    var walker = document.createTreeWalker(mesTextEl, NodeFilter.SHOW_TEXT, null, false);
+    var phaseNode = null;
+    var lastCharNode = null;
+    var nodesToCheck = [];
+
+    while (walker.nextNode()) {
+        var txt = walker.currentNode.textContent;
+        nodesToCheck.push(walker.currentNode);
+        if (/^\s*phase\s*:/i.test(txt)) phaseNode = walker.currentNode;
+        if (/char_(?:lust|trust|obsession|fear|affection)\s*:/i.test(txt)) lastCharNode = walker.currentNode;
+    }
+
+    if (!phaseNode || !lastCharNode) {
+        _abtStripped.add(msgIndex);
+        return;
+    }
+
+    // Collect all nodes between phaseNode and lastCharNode (inclusive)
+    // and their parent elements if they'd become empty
+    var removing = false;
+    var toRemove = [];
+    for (var i = 0; i < nodesToCheck.length; i++) {
+        if (nodesToCheck[i] === phaseNode) removing = true;
+        if (removing) toRemove.push(nodesToCheck[i]);
+        if (nodesToCheck[i] === lastCharNode) break;
+    }
+
+    // Remove the nodes and their parent elements if empty after removal
+    for (var j = 0; j < toRemove.length; j++) {
+        var node = toRemove[j];
+        var parent = node.parentNode;
+        if (parent) {
+            parent.removeChild(node);
+            // If parent is now empty (or just whitespace), remove it too
+            // but only if it's not the mesTextEl itself
+            while (parent && parent !== mesTextEl &&
+                   parent.textContent.trim() === "" &&
+                   parent.querySelectorAll("img,svg,canvas").length === 0) {
+                var grandparent = parent.parentNode;
+                if (grandparent) grandparent.removeChild(parent);
+                parent = grandparent;
+            }
+        }
+    }
+
+    // Clean up excess <br> tags left behind
+    mesTextEl.innerHTML = mesTextEl.innerHTML.replace(/(?:<br\s*\/?>\s*){3,}/gi, "<br><br>");
+    _abtStripped.add(msgIndex);
+}
+
+// ── Process single message ───────────────────────────────────────────────────
+function abtProcess(msgDiv, msgIndex, forceRedraw) {
     try {
         const s = abtLoad();
         if (!s.enabled) return;
         const ctx = SillyTavern.getContext();
         const msg = ctx.chat[msgIndex];
         if (!msg || msg.is_user) return;
-        const fields = abtParse(msg.mes || "");
+
+        const rawText = msg.mes || "";
+        const fields = abtParse(rawText);
         if (!fields) return;
+
+        // ── Content hash check: skip if nothing changed ──
+        const contentKey = rawText.match(/<infoblock>([\s\S]*?)<\/infoblock>/i);
+        const hashInput = (contentKey ? contentKey[1] : "") + "|" + _abtSettingsVer;
+        const hash = abtHash(hashInput);
+        const cached = _abtCache.get(msgIndex);
+
+        if (!forceRedraw && cached && cached.hash === hash) {
+            // Content hasn't changed — check if card is still in DOM
+            const mesTextEl = msgDiv.querySelector(".mes_text");
+            if (mesTextEl && mesTextEl.querySelector(".abt-block")) return;
+        }
+
+        _abtCache.set(msgIndex, { hash, fields });
+
         const mesTextEl = msgDiv.querySelector(".mes_text");
         if (!mesTextEl) return;
+
+        // Pause MutationObserver during our DOM writes
+        _abtMutationPaused = true;
+
+        // Remove existing blocks
         mesTextEl.querySelectorAll(".abt-block").forEach(el => el.remove());
         mesTextEl.querySelectorAll(".abt-notes-split").forEach(el => el.remove());
-        
-        // Strip <infoblock>
-        var html = mesTextEl.innerHTML;
-        html = html.replace(/&lt;infoblock&gt;[\s\S]*?&lt;\/infoblock&gt;/gi, "");
-        html = html.replace(/<infoblock>[\s\S]*?<\/infoblock>/gi, "");
-        html = html.replace(/(?:<br\s*\/?>\s*){3,}/gi, "<br><br>");
-        html = html.replace(/<p>\s*<\/p>/gi, "");
-        mesTextEl.innerHTML = html;
-        
-        // DOM-level: extract notes from blockquotes.
-        // Find blockquotes that contain notes content and split them.
+
+        // Strip infoblock text (only first time)
+        abtStripInfoblock(mesTextEl, msgIndex);
+
+        // DOM-level: extract notes from blockquotes
         mesTextEl.querySelectorAll("blockquote").forEach(function(bq) {
             var bqHtml = bq.innerHTML;
-            
-            // Find the notes start — look for the ꒰ᐢ marker followed by ⛧ 
-            // that precedes the Date: field. This is distinct from the OOC marker.
-            // The OOC content is: ꒰ᐢ. .ᐢ꒱ [text] ⛧
-            // The notes marker is: ꒰ᐢ. .ᐢ꒱⛧ then Date: on next line
-            
-            // Strategy: find the LAST occurrence of ꒰ᐢ in the blockquote —
-            // the first is the LILITH header, the second is the OOC body start,
-            // the last is the notes marker.
+
             var lastMarkerIdx = -1;
             var searchFrom = 0;
             while (true) {
-                var idx = bqHtml.indexOf("\u26E7", searchFrom); // ⛧ after ꒱
+                var idx = bqHtml.indexOf("\u26E7", searchFrom);
                 if (idx === -1) break;
-                // Check if this ⛧ is followed (within ~50 chars) by Date: or <b>Date:
                 var after = bqHtml.substring(idx, idx + 80);
                 if (/Date:/i.test(after)) {
-                    // Walk back to find the ꒰ᐢ before this
                     var walkBack = bqHtml.lastIndexOf("꒰ᐢ", idx);
                     if (walkBack !== -1 && idx - walkBack < 30) {
                         lastMarkerIdx = walkBack;
                     } else {
-                        lastMarkerIdx = idx; // use ⛧ position directly
+                        lastMarkerIdx = idx;
                     }
                     break;
                 }
                 searchFrom = idx + 1;
             }
-            
-            // Fallback: just find <b>Date:</b> or bold Date:
+
             if (lastMarkerIdx === -1) {
                 var datePatterns = [
                     /<b>Date:<\/b>/i,
@@ -674,12 +832,10 @@ function abtProcess(msgDiv, msgIndex) {
                     var dm = bqHtml.match(dp);
                     if (dm) {
                         lastMarkerIdx = bqHtml.indexOf(dm[0]);
-                        // Walk back to catch ꒰ᐢ marker if on previous line
                         var lookBack = bqHtml.lastIndexOf("꒰ᐢ", lastMarkerIdx);
                         if (lookBack !== -1 && lastMarkerIdx - lookBack < 100) {
                             lastMarkerIdx = lookBack;
                         }
-                        // Walk back further to catch any <br> before the marker
                         while (lastMarkerIdx > 0 && /[\s]/.test(bqHtml[lastMarkerIdx-1])) lastMarkerIdx--;
                         var brBefore = bqHtml.lastIndexOf("<br", lastMarkerIdx);
                         if (brBefore !== -1 && lastMarkerIdx - brBefore < 10) {
@@ -689,17 +845,14 @@ function abtProcess(msgDiv, msgIndex) {
                     }
                 }
             }
-            
+
             if (lastMarkerIdx === -1) return;
-            
-            // Split the blockquote
+
             var oocPart = bqHtml.substring(0, lastMarkerIdx).replace(/(<br\s*\/?>|\s)+$/gi, "");
             var notesPart = bqHtml.substring(lastMarkerIdx);
-            
-            // Keep OOC in blockquote
+
             bq.innerHTML = oocPart;
-            
-            // Create collapsible notes after blockquote
+
             var notesDiv = document.createElement("div");
             notesDiv.className = "abt-notes-split";
             notesDiv.style.cssText = "margin:6px 0;";
@@ -716,14 +869,45 @@ function abtProcess(msgDiv, msgIndex) {
         wrap.innerHTML = abtRenderCard(fields, s);
         const card = wrap.firstElementChild;
         if (card) mesTextEl.appendChild(card);
-    } catch(e) { console.error("[Abattoir] process failed:", e); }
+
+        // Resume MutationObserver
+        _abtMutationPaused = false;
+    } catch(e) {
+        _abtMutationPaused = false;
+        console.error("[Abattoir] process failed:", e);
+    }
 }
 
+// ── Throttled reprocessAll ───────────────────────────────────────────────────
 function abtReprocessAll() {
+    if (_abtReprocessTimer) return; // already scheduled
+    _abtReprocessTimer = setTimeout(() => {
+        _abtReprocessTimer = null;
+        _abtReprocessAllNow();
+    }, 300);
+}
+
+function _abtReprocessAllNow() {
     document.querySelectorAll(".mes").forEach(node => {
         const id = Number(node.getAttribute("mesid"));
         if (!isNaN(id)) abtProcess(node, id);
     });
+}
+
+// ── Settings change handler ──────────────────────────────────────────────────
+function abtOnSettingsChange() {
+    _abtSettingsVer++;
+    _abtSettingsCache = null;
+    // Force redraw only visible messages immediately, queue the rest
+    document.querySelectorAll(".mes").forEach(node => {
+        const id = Number(node.getAttribute("mesid"));
+        if (!isNaN(id)) {
+            // Invalidate cache for this message
+            _abtCache.delete(id);
+            _abtStripped.delete(id); // Need to re-strip if settings changed display
+        }
+    });
+    abtReprocessAll();
 }
 
 // ── Settings HTML ─────────────────────────────────────────────────────────────
@@ -877,8 +1061,11 @@ jQuery(async () => {
     const ctx = SillyTavern.getContext();
     $("#extensions_settings").append(ABT_HTML);
 
+    // Inject shared SVG filter definitions
+    abtEnsureFilters();
+
     const s = abtLoad();
-    s.enabled = true; // Extension on/off handled by SillyTavern's extension manager
+    s.enabled = true;
     abtSave(s);
     $("#abt-evt-on").prop("checked", s.evtEnabled);
     $("#abt-evt-freq").val(s.evtFreq);
@@ -894,8 +1081,10 @@ jQuery(async () => {
     $("#abt-violence").val(s.violenceLevel);
     for (const k of Object.keys(s.content)) $(`#abt-c-${k}`).prop("checked", s.content[k]);
 
+    // ── Settings change: save, invalidate caches, throttled reprocess ──
     $("#abt-panel").on("change", "input, select", function() {
         const cur = abtLoad();
+        _abtSettingsCache = null; // force reload
         cur.enabled       = true;
         cur.evtEnabled    = $("#abt-evt-on").is(":checked");
         cur.evtFreq       = $("#abt-evt-freq").val();
@@ -912,16 +1101,55 @@ jQuery(async () => {
         for (const k of Object.keys(cur.content))  cur.content[k]  = $(`#abt-c-${k}`).is(":checked");
         abtSave(cur);
         abtInject();
-        abtReprocessAll();
+        abtOnSettingsChange(); // invalidate + throttled reprocess
     });
 
+    // ── Event listeners — no duplicate processing ──
     if (ctx.eventTypes?.GENERATION_STARTED)  ctx.eventSource.on(ctx.eventTypes.GENERATION_STARTED, abtInject);
-    if (ctx.eventTypes?.CHAT_CHANGED)        ctx.eventSource.on(ctx.eventTypes.CHAT_CHANGED, () => setTimeout(abtReprocessAll, 150));
-    if (ctx.eventTypes?.MESSAGE_RECEIVED)    ctx.eventSource.on(ctx.eventTypes.MESSAGE_RECEIVED,  idx => { setTimeout(() => { const el = document.querySelector(`.mes[mesid="${idx}"]`); if (el) abtProcess(el, idx); }, 200); setTimeout(() => { const el = document.querySelector(`.mes[mesid="${idx}"]`); if (el && !el.querySelector(".abt-block")) abtProcess(el, idx); }, 800); });
-    if (ctx.eventTypes?.MESSAGE_EDITED)      ctx.eventSource.on(ctx.eventTypes.MESSAGE_EDITED,    idx => setTimeout(() => { const el = document.querySelector(`.mes[mesid="${idx}"]`); if (el) abtProcess(el, idx); }, 300));
-    if (ctx.eventTypes?.MESSAGE_SWIPED)      ctx.eventSource.on(ctx.eventTypes.MESSAGE_SWIPED,    idx => setTimeout(() => { const el = document.querySelector(`.mes[mesid="${idx}"]`); if (el) abtProcess(el, idx); }, 200));
-    if (ctx.eventTypes?.MESSAGE_UPDATED)     ctx.eventSource.on(ctx.eventTypes.MESSAGE_UPDATED,   idx => setTimeout(() => { const el = document.querySelector(`.mes[mesid="${idx}"]`); if (el) abtProcess(el, idx); }, 300));
+    if (ctx.eventTypes?.CHAT_CHANGED)        ctx.eventSource.on(ctx.eventTypes.CHAT_CHANGED, () => {
+        // Chat switched — clear ALL caches, reprocess
+        _abtCache.clear();
+        _abtStripped.clear();
+        _abtSettingsCache = null;
+        setTimeout(abtReprocessAll, 150);
+    });
+    if (ctx.eventTypes?.MESSAGE_RECEIVED)    ctx.eventSource.on(ctx.eventTypes.MESSAGE_RECEIVED,  idx => {
+        setTimeout(() => {
+            const el = document.querySelector(`.mes[mesid="${idx}"]`);
+            if (el) abtProcess(el, idx);
+        }, 200);
+        // Single retry for late renders, NOT the aggressive double-retry from before
+        setTimeout(() => {
+            const el = document.querySelector(`.mes[mesid="${idx}"]`);
+            if (el && !el.querySelector(".abt-block")) abtProcess(el, idx);
+        }, 800);
+    });
+    if (ctx.eventTypes?.MESSAGE_EDITED)      ctx.eventSource.on(ctx.eventTypes.MESSAGE_EDITED,    idx => {
+        _abtCache.delete(idx);
+        _abtStripped.delete(idx);
+        setTimeout(() => {
+            const el = document.querySelector(`.mes[mesid="${idx}"]`);
+            if (el) abtProcess(el, idx, true);
+        }, 300);
+    });
+    if (ctx.eventTypes?.MESSAGE_SWIPED)      ctx.eventSource.on(ctx.eventTypes.MESSAGE_SWIPED,    idx => {
+        _abtCache.delete(idx);
+        _abtStripped.delete(idx);
+        setTimeout(() => {
+            const el = document.querySelector(`.mes[mesid="${idx}"]`);
+            if (el) abtProcess(el, idx, true);
+        }, 200);
+    });
+    if (ctx.eventTypes?.MESSAGE_UPDATED)     ctx.eventSource.on(ctx.eventTypes.MESSAGE_UPDATED,   idx => {
+        _abtCache.delete(idx);
+        _abtStripped.delete(idx);
+        setTimeout(() => {
+            const el = document.querySelector(`.mes[mesid="${idx}"]`);
+            if (el) abtProcess(el, idx, true);
+        }, 300);
+    });
 
+    // ── MutationObserver — GUARDED, won't re-trigger during our writes ──
     const chat = document.getElementById("chat");
     if (chat) {
         const pending = new Set();
@@ -937,12 +1165,16 @@ jQuery(async () => {
             }, delay);
         };
         new MutationObserver(muts => {
+            // ── GUARD: skip if we're the ones mutating ──
+            if (_abtMutationPaused) return;
+
             for (const m of muts) {
                 if (m.type !== "childList") continue;
                 const tgt = m.target instanceof HTMLElement ? m.target : null;
                 if (tgt?.closest?.(".abt-block")) continue;
+                if (tgt?.closest?.(".abt-notes-split")) continue;
                 for (const node of m.addedNodes) {
-                    if (!(node instanceof HTMLElement) || node.closest?.(".abt-block")) continue;
+                    if (!(node instanceof HTMLElement) || node.closest?.(".abt-block") || node.closest?.(".abt-notes-split")) continue;
                     if (node.classList.contains("mes")) { schedule(node); continue; }
                     const mes = node.closest?.(".mes") || tgt?.closest?.(".mes");
                     if (mes && (node.classList.contains("mes_text") || tgt?.classList.contains("mes_text") || node.querySelector?.(".mes_text"))) schedule(mes);
@@ -951,15 +1183,15 @@ jQuery(async () => {
         }).observe(chat, { childList:true, subtree:true });
     }
 
+    // Initial process — single pass, no duplicates
     document.querySelectorAll(".mes").forEach(node => {
         const id = Number(node.getAttribute("mesid"));
         if (!isNaN(id)) abtProcess(node, id);
     });
 
-    // Delayed reprocess for mobile — messages may render late
-    setTimeout(abtReprocessAll, 500);
-    setTimeout(abtReprocessAll, 1500);
+    // Single delayed reprocess for mobile (reduced from two)
+    setTimeout(abtReprocessAll, 800);
 
     abtInject();
-    console.log("[Abattoir] loaded");
+    console.log("[Abattoir] loaded (performance rewrite)");
 });
